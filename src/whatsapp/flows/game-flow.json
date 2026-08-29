@@ -1,0 +1,114 @@
+{
+  "version": "7.0",
+  "screens": [
+    {
+      "id": "BOARD",
+      "title": "Your Board",
+      "terminal": true,
+      "data": {
+        "call_label": {
+          "type": "string",
+          "__example__": "Number 42 — four and two"
+        },
+        "progress_label": {
+          "type": "string",
+          "__example__": "7 of 90 called · 3 marked on your ticket"
+        },
+        "board_text": {
+          "type": "string",
+          "__example__": "  4  ·  · 31  ·  · 62  · 80\n  · 17 24  · 45  ·  ·  · 86\n  ·  · 28 39  · 55 71  ·  ·"
+        },
+        "question_label": {
+          "type": "string",
+          "__example__": "Is this number on your ticket?"
+        },
+        "claim_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "none",
+              "title": "Not claiming yet"
+            },
+            {
+              "id": "full_house",
+              "title": "Full House"
+            },
+            {
+              "id": "exit",
+              "title": "Exit this game"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "${data.call_label}"
+          },
+          {
+            "type": "TextCaption",
+            "text": "${data.progress_label}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.board_text}",
+            "font-weight": "bold"
+          },
+          {
+            "type": "Form",
+            "name": "board_form",
+            "children": [
+              {
+                "type": "RadioButtonsGroup",
+                "name": "has_number",
+                "label": "${data.question_label}",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "yes",
+                    "title": "Yes, I have it"
+                  },
+                  {
+                    "id": "no",
+                    "title": "Not on my ticket"
+                  }
+                ]
+              },
+              {
+                "type": "Dropdown",
+                "name": "claim",
+                "label": "Claim a prize, or exit",
+                "required": false,
+                "data-source": "${data.claim_options}"
+              },
+              {
+                "type": "Footer",
+                "label": "Submit",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "has_number": "${form.has_number}",
+                    "claim": "${form.claim}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
