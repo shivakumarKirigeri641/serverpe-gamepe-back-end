@@ -47,6 +47,7 @@ import {
   getPlan,
   listActivePlans,
   planRow,
+  renderDescription,
 } from './plan.service.js';
 import { logInbound } from './message.service.js';
 import { isBlocked, markBlockNotified, needsBlockNotice } from './moderation.service.js';
@@ -1347,7 +1348,7 @@ async function handleAction(player: PlayerRow, actionId: string): Promise<void> 
         await sendText(
           player.wa_id,
           plan
-            ? `*${plan.name}* is not available yet.\n\n${plan.description}`
+            ? `*${plan.name}* is not available yet.\n\n${renderDescription(plan)}`
             : 'That plan is not available yet.',
         );
         return sendPlanPrompt(player, gameKey, players);

@@ -1,5 +1,5 @@
 import { query, queryOne } from '../db/pool.js';
-import { isChargingEnabled } from '../config/env.js';
+import { isChargingEnabled, trialEndLabel } from '../config/env.js';
 
 /**
  * Plans a host picks when creating a room.
@@ -80,6 +80,18 @@ export function formatPrice(plan: Plan): string {
  */
 export function chargeableAmount(plan: Plan): number {
   return isChargingEnabled() ? plan.price_paise : 0;
+}
+
+/**
+ * Fills the {TRIAL_END} placeholder in a plan description.
+ *
+ * The date lives in FREE_TRIAL_ENDS_AT, not in the stored text: a date written
+ * into the description goes stale silently the moment the trial is extended,
+ * and players keep being shown the old one. Every surface that renders a
+ * description goes through here.
+ */
+export function renderDescription(plan: Plan): string {
+  return plan.description.replace(/\{TRIAL_END\}/g, trialEndLabel());
 }
 
 /** Row title and description for the WhatsApp plan picker. */

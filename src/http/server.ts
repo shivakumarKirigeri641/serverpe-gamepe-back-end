@@ -13,7 +13,8 @@ import { renderPoliciesPage } from './policies-page.js';
 import { listActiveDocuments } from '../services/consent.service.js';
 import { getPublicBusinessProfile } from '../services/business.service.js';
 import { apiImagePath, getBrandManifest, imagesDir } from '../services/brand.service.js';
-import { formatListPrice, formatPrice, listActivePlans } from '../services/plan.service.js';
+import { handleWebhook, verifyWebhookSignature } from '../services/payment.service.js';
+import { formatListPrice, formatPrice, listActivePlans, renderDescription } from '../services/plan.service.js';
 
 import { verifyChallenge, verifySignature } from '../whatsapp/verify.js';
 import type { WhatsAppWebhookBody } from '../whatsapp/types.js';
@@ -183,6 +184,37 @@ export function createServer(): Express {
     }),
   );
 
+  /**
+   * Razorpay payment webhook.
+   *
+   * Mounted whether or not payments are enabled: Razorpay retries a callback
+   * for hours, so one arriving just after the flag is flipped must still be
+   * verifiable rather than meeting a 404 and being abandoned.
+   *
+   * Always answers 200, even for a bad signature. Razorpay treats any other
+   * status as a delivery failure and retries — which for a forged request would
+   * mean answering the attacker over and over. The event is recorded with
+   * signature_ok = false and acted on by nobody.
+   */
+  app.post(apiPath('/public/payments/razorpay/webhook'), async (req: Request, res: Response) => {
+    try {
+      const raw = (req as Request & { rawBody?: Buffer }).rawBody ?? Buffer.from('');
+      const signatureOk = verifyWebhookSignature(raw, req.header('x-razorpay-signature'));
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const eventType = typeof body['event'] === 'string' ? body['event'] : 'unknown';
+      const eventId = req.header('x-razorpay-event-id') ?? undefined;
+
+      const result = await handleWebhook(eventType, eventId, body, signatureOk);
+      res.status(200).json({ received: true, ...result });
+    } catch (err) {
+      logger.error({ err }, 'razorpay webhook failed');
+      // Still 200: a retry would hit the same fault. The event row is the
+      // record, and the log is where this gets investigated.
+      res.status(200).json({ received: true, handled: false });
+    }
+  });
+
   app.get(apiPath('/public/brand'), async (_req: Request, res: Response) => {
     try {
       res
@@ -218,7 +250,12 @@ export function createServer(): Express {
   // admin panel reaches the website without a deploy.
   app.get(apiPath('/public/plans'), async (_req: Request, res: Response) => {
     try {
-      const plans = await listActivePlans();
+      // Plans that cannot be bought yet are hidden until SHOW_UNAVAILABLE_PLANS
+      // is turned on. Showing a "coming soon" price that has not been decided
+      // is a promise that may not be kept, and a number a visitor remembers is
+      // worse to change later than one they never saw.
+      const all = await listActivePlans();
+      const plans = env.SHOW_UNAVAILABLE_PLANS ? all : all.filter((p) => p.is_selectable);
       res
         .set('Cache-Control', 'public, max-age=300')
         .set('Access-Control-Allow-Origin', '*')
@@ -227,7 +264,7 @@ export function createServer(): Express {
             key: p.plan_key,
             name: p.name,
             tagline: p.tagline,
-            description: p.description,
+            description: renderDescription(p),
             // What it costs today (free during the trial) and what it will
             // cost when charging starts — a "coming soon" plan must show its
             // real price, not the trial's zero.

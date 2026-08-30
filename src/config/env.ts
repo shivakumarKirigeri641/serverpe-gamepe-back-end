@@ -1,5 +1,23 @@
-import 'dotenv/config';
+import { config as loadEnv } from 'dotenv';
 import { z } from 'zod';
+
+/**
+ * Which .env file this process reads.
+ *
+ * Two files, one per environment: `.env` for a laptop, `.env.prod` for the
+ * server. Picked explicitly rather than by convention so it is never ambiguous
+ * which one is live — a production process that silently fell back to a
+ * development file would point at a local database and a test WhatsApp number,
+ * and nothing would look wrong until a real player messaged.
+ *
+ * Precedence: variables already in the environment win. That is what lets
+ * `node --env-file=.env.prod` (see the start:prod script) and a container's own
+ * variables override the file without editing it.
+ */
+const ENV_FILE =
+  process.env['ENV_FILE'] ?? (process.env['NODE_ENV'] === 'production' ? '.env.prod' : '.env');
+
+loadEnv({ path: ENV_FILE });
 
 const bool = z
   .string()
@@ -162,6 +180,35 @@ const schema = z.object({
 
   DRAW_INTERVAL_SECONDS: z.coerce.number().int().min(1).max(120).default(20),
 
+  /* ----------------------------------------------------------- payments */
+
+  /**
+   * Razorpay. Off until there are prices to charge.
+   *
+   * While false the order endpoint refuses and nothing about payment is shown
+   * to a player. The webhook stays mounted regardless, because Razorpay retries
+   * for hours and a callback arriving after the flag is flipped must still be
+   * verifiable rather than silently 404ing.
+   */
+  PAYMENTS_ENABLED: bool,
+  RAZORPAY_KEY_ID: z.string().default(''),
+  RAZORPAY_KEY_SECRET: z.string().default(''),
+  /** Set in Razorpay Dashboard > Settings > Webhooks. Signs the callbacks. */
+  RAZORPAY_WEBHOOK_SECRET: z.string().default(''),
+
+  /**
+   * Whether plans that cannot be bought yet appear publicly.
+   *
+   * False while the pricing is undecided: showing a player a price we have not
+   * settled on is a promise we may not keep, and "coming soon" on a number that
+   * later changes reads worse than never having shown it.
+   */
+  SHOW_UNAVAILABLE_PLANS: bool,
+
+  /** Prices include GST (true) or GST is added on top (false). */
+  GST_INCLUSIVE: bool,
+  GST_PERCENT: z.coerce.number().min(0).max(100).default(18),
+
   /* ------------------------------------------------------- email alerts */
 
   MAIL_HOST: z.string().default(''),
@@ -197,6 +244,43 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data;
+
+/**
+ * Refuses to start production with a placeholder still in place.
+ *
+ * .env.prod ships with CHANGE_ME against every secret. A server that boots
+ * anyway would run with a known admin passcode and a signing key printed in the
+ * repository — and nothing would look wrong until somebody found it. Failing at
+ * boot is loud, immediate, and happens before a single player is exposed.
+ */
+if (env.NODE_ENV === 'production') {
+  const placeholders = (
+    [
+      'WHATSAPP_ACCESS_TOKEN',
+      'BOARD_LINK_SECRET',
+      'ADMIN_API_KEY',
+      'ADMIN_PASSCODE',
+      'DATABASE_URL',
+      'NOREPLYMAIL_PASSWORD',
+      'ADMINMAIL_PASSWORD',
+    ] as const
+  ).filter((key) => String(env[key] ?? '').includes('CHANGE_ME'));
+
+  if (placeholders.length > 0) {
+    throw new Error(
+      `Refusing to start: ${placeholders.join(', ')} still contain CHANGE_ME in ${ENV_FILE}.`,
+    );
+  }
+
+  // The development safety net, left on by mistake, silently drops every real
+  // player's messages. Better to refuse than to look healthy and reach nobody.
+  if (env.WHATSAPP_ALLOWED_RECIPIENTS.trim() !== '') {
+    throw new Error(
+      'Refusing to start: WHATSAPP_ALLOWED_RECIPIENTS must be empty in production, ' +
+        'or every player outside that list is silently ignored.',
+    );
+  }
+}
 
 /**
  * Entry fees are only charged once the free trial is over AND the flag is on.

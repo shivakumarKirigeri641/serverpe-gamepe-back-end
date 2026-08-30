@@ -1,6 +1,8 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { logger } from '../utils/logger.js';
+import { env } from '../config/env.js';
+import { queryOne } from '../db/pool.js';
 import { EVENT, track } from '../services/analytics.service.js';
 import { backfillMetrics, latestMetricsDay, runMaintenance } from '../services/maintenance.service.js';
 import {
@@ -37,6 +39,15 @@ import { lookupNumber, searchNumbers } from '../services/lookup.service.js';
 import { previewPurge, purgeData } from '../services/purge.service.js';
 import { documentStats, listDocuments, readDocument } from '../services/document.service.js';
 import { getTrialSummary } from '../services/trial.service.js';
+import {
+  createOrder,
+  listPaymentEvents,
+  listPayments,
+  paymentSummary,
+  paymentsConfigured,
+  paymentsLive,
+  splitGst,
+} from '../services/payment.service.js';
 import {
   blockHistory,
   blockNumber,
@@ -847,6 +858,85 @@ export function createAdminRouter(): Router {
         (req.body as { reason?: string } | undefined)?.reason ?? 'Unblocked by admin',
       );
       return unblockNumber(waId, reason, req.adminActor ?? 'admin');
+    }),
+  );
+
+  /* --------------------------------------------------------- payments */
+
+  /**
+   * Payments, and whether the integration is even switched on.
+   *
+   * The status block is here because "no payments yet" and "payments are
+   * misconfigured" look identical from an empty table, and only one of them is
+   * a problem.
+   */
+  router.get(
+    '/payments',
+    handle(async (req) => {
+      const { limit, offset } = pageQuery.parse(req.query);
+      const [payments, summary, events] = await Promise.all([
+        listPayments(limit, offset),
+        paymentSummary(),
+        listPaymentEvents(50),
+      ]);
+      return {
+        status: {
+          enabled: paymentsLive(),
+          configured: paymentsConfigured(),
+          gstPercent: env.GST_PERCENT,
+          gstInclusive: env.GST_INCLUSIVE,
+          webhookSecretSet: Boolean(env.RAZORPAY_WEBHOOK_SECRET),
+          keyMode: env.RAZORPAY_KEY_ID.startsWith('rzp_live') ? 'live' : 'test',
+        },
+        summary,
+        payments,
+        events,
+      };
+    }),
+  );
+
+  /** What a given amount splits into, for checking the GST setting is right. */
+  router.get(
+    '/payments/quote',
+    handle(async (req) => {
+      const amount = z.coerce.number().int().min(100).parse(req.query['amountPaise']);
+      return { amountPaise: amount, ...splitGst(amount) };
+    }),
+  );
+
+  /**
+   * Creates an order by hand.
+   *
+   * Admin-only for now, because there is no player-facing payment surface yet.
+   * It exists so the whole path — order, checkout, webhook, wallet credit — can
+   * be exercised end to end against Razorpay test keys before a single player
+   * is shown a price.
+   */
+  router.post(
+    '/payments/order',
+    handle(async (req) => {
+      const input = z
+        .object({
+          waId: z.string().min(6).max(20),
+          amountPaise: z.number().int().min(100),
+          planKey: z.string().max(64).optional(),
+          creditsPaise: z.number().int().min(0).optional(),
+        })
+        .parse(req.body ?? {});
+
+      const player = await queryOne<{ id: string }>(
+        'SELECT id FROM players WHERE wa_id = $1',
+        [input.waId.replace(/[^0-9]/g, '')],
+      );
+      if (!player) throw new Error('No player with that number');
+
+      return createOrder({
+        playerId: player.id,
+        waId: input.waId,
+        planKey: input.planKey ?? null,
+        amountPaise: input.amountPaise,
+        creditsPaise: input.creditsPaise,
+      });
     }),
   );
 
