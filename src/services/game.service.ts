@@ -49,9 +49,21 @@ const GAME_COLUMNS = `id, game_key, room_code, status, host_player_id, config, s
   charged_at, charged_paise, created_at, started_at, ended_at, expected_players`;
 
 export class GameError extends Error {
-  constructor(message: string) {
+  /**
+   * Whether trying again could succeed.
+   *
+   * A mistyped room code is worth another attempt; a game already in progress
+   * is not, however many times it is typed. The router uses this to decide
+   * between re-arming the prompt and returning the player to the menu — without
+   * it, "wait for the game to finish" was followed by "send another code",
+   * which walked people straight back into the same wall.
+   */
+  readonly retryable: boolean;
+
+  constructor(message: string, retryable = true) {
     super(message);
     this.name = 'GameError';
+    this.retryable = retryable;
   }
 }
 
@@ -215,12 +227,27 @@ export async function joinGame(roomCode: string, playerId: string, entryCount = 
     if (!existing) throw new GameError(`No game found with code *${roomCode.toUpperCase()}*.`);
 
     const game = await lockGame(existing.id, client);
-    if (!game) throw new GameError('That game no longer exists.');
+    if (!game) {
+      // Retryable: they may simply have mistyped a still-valid code.
+      throw new GameError(
+        'That room no longer exists. Room codes stop working once a game is over.',
+      );
+    }
     if (game.status !== 'lobby') {
+      // Joining a game in progress is deliberately not allowed: marks are
+      // derived from every number called so far, so a late arrival would
+      // appear instantly caught up and could claim a prize on their first tap.
+      // The refusal has to say what to do next, or they simply try again and
+      // get the same wall.
       throw new GameError(
         game.status === 'running'
-          ? 'That game has already started. Ask the host for the next round.'
-          : 'That game is over.',
+          ? `Room *${game.room_code}* is already playing, so nobody can be added now.
+
+` +
+            `Please wait for it to finish — the host can start a new game straight after, ` +
+            `and you will be able to join that one.`
+          : `Room *${game.room_code}* has finished. Ask the host to start a new game.`,
+        false,
       );
     }
 
@@ -369,10 +396,28 @@ export async function leaveGame(gameId: string, playerId: string): Promise<Leave
 export async function startGame(gameId: string, byPlayerId: string): Promise<GameRow> {
   return withTransaction(async (client) => {
     const game = await lockGame(gameId, client);
-    if (!game) throw new GameError('That game no longer exists.');
-    if (game.status === 'running') throw new GameError('The game is already running.');
-    if (game.status !== 'lobby') throw new GameError('That game is over.');
-    if (game.host_player_id !== byPlayerId) throw new GameError('Only the host can start the game.');
+    // Buttons stay tappable forever in WhatsApp history, so Start is routinely
+    // pressed on a game that ended hours ago. Each case says what happened and
+    // what to do instead, rather than a bare refusal.
+    if (!game) {
+      throw new GameError(
+        'That room has expired and its details are gone. Send *play* to set up a new game.',
+      );
+    }
+    if (game.status === 'running') {
+      throw new GameError(`Room *${game.room_code}* is already running. Open your board to play.`);
+    }
+    if (game.status === 'completed') {
+      throw new GameError(`Room *${game.room_code}* has finished. Send *play* to start a new game.`);
+    }
+    if (game.status !== 'lobby') {
+      throw new GameError(
+        `Room *${game.room_code}* was closed before it started. Send *play* to set up a new game.`,
+      );
+    }
+    if (game.host_player_id !== byPlayerId) {
+      throw new GameError('Only the host can start this game.');
+    }
 
     const engine = getEngine(game.game_key);
     const members = await countMembers(game.id, client);

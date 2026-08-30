@@ -32,7 +32,16 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
 
-  WHATSAPP_PHONE_NUMBER_ID: z.string().default(''),
+  /**
+   * Required, not optional.
+   *
+   * Nothing can be sent without it, and — less obviously — it is what the
+   * webhook guard compares against to decide whether a message was addressed to
+   * us. Left empty, that guard has nothing to compare and would have to allow
+   * everything through, silently answering other numbers on the same Meta
+   * account. A missing value must stop the process, not weaken it.
+   */
+  WHATSAPP_PHONE_NUMBER_ID: z.string().min(1, 'required: the webhook guard compares against it'),
   /** Not read at runtime; kept for Flow management and support tickets. */
   WHATSAPP_BUSINESS_ACCOUNT_ID: z.string().default(''),
   WHATSAPP_ACCESS_TOKEN: z.string().default(''),

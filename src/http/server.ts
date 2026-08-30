@@ -13,10 +13,20 @@ import { renderPoliciesPage } from './policies-page.js';
 import { listActiveDocuments } from '../services/consent.service.js';
 import { getPublicBusinessProfile } from '../services/business.service.js';
 import { apiImagePath, getBrandManifest, imagesDir } from '../services/brand.service.js';
-import { handleWebhook, verifyWebhookSignature } from '../services/payment.service.js';
+import {
+  confirmPayment,
+  findOrCreateOrder,
+  handleWebhook,
+  orderBelongsTo,
+  verifyWebhookSignature,
+} from '../services/payment.service.js';
+import { priceForPlayers } from '../services/pricing.service.js';
+import { queryOne } from '../db/pool.js';
+import { renderCheckoutClosed, renderCheckoutPage } from './checkout-page.js';
+import { policiesUrl, verifyCheckoutToken, whatsappReturnUrl } from './board-token.js';
 import { formatListPrice, formatPrice, listActivePlans, renderDescription } from '../services/plan.service.js';
 
-import { verifyChallenge, verifySignature } from '../whatsapp/verify.js';
+import { isForThisNumber, verifyChallenge, verifySignature } from '../whatsapp/verify.js';
 import type { WhatsAppWebhookBody } from '../whatsapp/types.js';
 
 export function createServer(): Express {
@@ -98,6 +108,13 @@ export function createServer(): Express {
     res.sendStatus(200);
 
     const body = req.body as WhatsAppWebhookBody;
+
+    // Another number under the same Meta account. Acknowledged so Meta stops
+    // retrying, then dropped: replying would answer somebody else's user.
+    if (!isForThisNumber(body)) {
+      logger.debug('ignored webhook addressed to a different phone number');
+      return;
+    }
 
     // Delivery receipts: the only real evidence a player's phone received a
     // number, as opposed to Meta having merely accepted it from us.
@@ -212,6 +229,131 @@ export function createServer(): Express {
       // Still 200: a retry would hit the same fault. The event row is the
       // record, and the log is where this gets investigated.
       res.status(200).json({ received: true, handled: false });
+    }
+  });
+
+  /**
+   * The payment page, reachable only through a signed link.
+   *
+   * Rendered server-side rather than being part of the admin panel: a player
+   * opens this from WhatsApp on their phone, and it must work without a login,
+   * without a build step, and on a bad connection.
+   */
+  app.get(`${apiPath('/public/pay')}/:token`, async (req: Request, res: Response) => {
+    try {
+      const claim = verifyCheckoutToken(String(req.params['token'] ?? ''));
+      if (!claim) {
+        res.status(403).type('html').send(renderCheckoutClosed('This payment link is not valid.'));
+        return;
+      }
+
+      const player = await queryOne<{ id: string; wa_id: string; display_name: string | null }>(
+        'SELECT id, wa_id, display_name FROM players WHERE id = $1',
+        [claim.playerId],
+      );
+      if (!player) {
+        res.status(404).type('html').send(renderCheckoutClosed('This payment could not be found.'));
+        return;
+      }
+
+      const pricing = await priceForPlayers(claim.players);
+      const plans = [pricing.single, pricing.unlimited].filter((p) => p !== null);
+      if (plans.length === 0) {
+        res.type('html').send(renderCheckoutClosed('No plan is available for that room size.'));
+        return;
+      }
+
+      // Both orders exist before either is chosen, because the choice happens
+      // on the page. Re-used rather than re-created on every page view.
+      const options = [];
+      for (const plan of plans) {
+        const order = await findOrCreateOrder({
+          playerId: player.id,
+          waId: player.wa_id,
+          planKey: plan.planKey,
+          amountPaise: plan.amountPaise,
+        });
+
+        const unlimited = plan.kind === 'unlimited_24h';
+        options.push({
+          planKey: plan.planKey,
+          label: unlimited ? 'Day pass — unlimited games' : 'One game',
+          sublabel: unlimited
+            ? `Play as much as you like for 24 hours, up to ${plan.maxPlayers} players`
+            : `A single room, up to ${plan.maxPlayers} players`,
+          orderId: order.orderId,
+          amountPaise: order.amountPaise,
+          basePaise: order.basePaise,
+          gstPaise: order.gstPaise,
+          selected: !unlimited,
+          ...(unlimited && pricing.savingPercent
+            ? { badge: `Save ${pricing.savingPercent}%` }
+            : {}),
+        });
+      }
+
+      res
+        .type('html')
+        .set('Cache-Control', 'no-store')
+        .send(
+          renderCheckoutPage({
+            token: String(req.params['token']),
+            keyId: env.RAZORPAY_KEY_ID,
+            gstPercent: env.GST_PERCENT,
+            playerName: player.display_name?.trim() || 'you',
+            players: claim.players,
+            bandLabel: pricing.bandLabel,
+            options,
+            policiesUrl: policiesUrl(),
+            confirmPath: `${apiPath('/public/pay')}/${req.params['token']}/confirm`,
+          }),
+        );
+    } catch (err) {
+      logger.error({ err }, 'failed to render checkout page');
+      res.status(500).type('html').send(renderCheckoutClosed('Could not load this payment.'));
+    }
+  });
+
+  /**
+   * Confirms a payment from the browser.
+   *
+   * Razorpay hands the page three values after a successful payment; the
+   * signature over them is verified here with the key secret, which a player
+   * cannot compute. This is the fast path — it credits immediately so the page
+   * can send them straight back to WhatsApp — and it is safe to run alongside
+   * the webhook, since both credit through the same idempotency key.
+   *
+   * The token in the URL must match the order being confirmed, so a valid
+   * signature for one order cannot be replayed against another.
+   */
+  app.post(`${apiPath('/public/pay')}/:token/confirm`, async (req: Request, res: Response) => {
+    try {
+      const claim = verifyCheckoutToken(String(req.params['token'] ?? ''));
+      if (!claim) {
+        res.status(403).json({ ok: false, error: 'invalid link' });
+        return;
+      }
+
+      const body = (req.body ?? {}) as Record<string, string>;
+      const orderId = String(body['razorpay_order_id'] ?? '');
+      const paymentId = String(body['razorpay_payment_id'] ?? '');
+      const signature = String(body['razorpay_signature'] ?? '');
+
+      // The link proves who the payer is; this proves the order is theirs, so
+      // a genuine signature for one host's order cannot be replayed by another.
+      if (!(await orderBelongsTo(orderId, claim.playerId))) {
+        res.status(400).json({ ok: false, error: 'order does not belong to this link' });
+        return;
+      }
+
+      const result = await confirmPayment(orderId, paymentId, signature);
+      res.status(result.ok ? 200 : 400).json({
+        ...result,
+        returnUrl: whatsappReturnUrl(),
+      });
+    } catch (err) {
+      logger.error({ err }, 'payment confirmation failed');
+      res.status(500).json({ ok: false, error: 'could not confirm' });
     }
   });
 

@@ -29,6 +29,11 @@ const KEEP = [
   'business_profile',
   'legal_documents',
   'plans',
+  // Which alerts are switched on is configuration an operator set deliberately,
+  // not a record of a player. Clearing it silently turned every alert off — the
+  // failure is invisible, because an alert that is not configured looks exactly
+  // like a quiet week.
+  'notification_settings',
 ] as const;
 
 export interface PurgePreview {

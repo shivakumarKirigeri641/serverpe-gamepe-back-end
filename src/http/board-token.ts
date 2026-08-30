@@ -74,3 +74,49 @@ export function whatsappReturnUrl(text?: string): string {
   if (!number) return 'https://wa.me/';
   return text ? `https://wa.me/${number}?text=${encodeURIComponent(text)}` : `https://wa.me/${number}`;
 }
+
+/* ---------------------------------------------------------------- payments */
+
+/**
+ * Signed link to a checkout page.
+ *
+ * Carries the host and the room size rather than an order id, because the page
+ * offers two things to buy and the choice is made there. Binding the link to an
+ * order would mean minting a link per option and losing the comparison that is
+ * the whole point of the page.
+ *
+ * Signed for the same reason as a board link: it can be forwarded, but not
+ * forged for somebody else.
+ */
+export interface CheckoutTokenPayload {
+  playerId: string;
+  players: number;
+}
+
+export function createCheckoutToken(playerId: string, players: number): string {
+  const data = Buffer.from(`pay:${playerId}:${players}`, 'utf8').toString('base64url');
+  return `${data}.${sign(data)}`;
+}
+
+export function verifyCheckoutToken(token: string): CheckoutTokenPayload | null {
+  const [data, signature] = token.split('.');
+  if (!data || !signature) return null;
+
+  const expected = Buffer.from(sign(data), 'utf8');
+  const given = Buffer.from(signature, 'utf8');
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
+
+  const parts = Buffer.from(data, 'base64url').toString('utf8').split(':');
+  if (parts[0] !== 'pay' || !parts[1]) return null;
+
+  const players = Number(parts[2]);
+  if (!Number.isFinite(players) || players < 1) return null;
+
+  return { playerId: parts[1], players };
+}
+
+export function checkoutUrl(playerId: string, players: number): string | null {
+  if (!env.PUBLIC_BASE_URL) return null;
+  const base = env.PUBLIC_BASE_URL.replace(/\/$/, '');
+  return `${base}${apiPath('/public/pay')}/${createCheckoutToken(playerId, players)}`;
+}

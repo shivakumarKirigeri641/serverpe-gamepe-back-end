@@ -10,6 +10,43 @@ import { whatsappReturnUrl } from './board-token.js';
  * mid-game. It polls for state rather than holding a socket open, for the same
  * reason: a phone that sleeps and wakes recovers on its own.
  */
+/**
+ * Shown when a board link no longer leads anywhere.
+ *
+ * Buttons and links live forever in WhatsApp history, so an old board link gets
+ * opened days later. Rendering the live board for a game that has ended left
+ * the page stuck on "Reconnecting…" — which reads as the product being broken
+ * rather than the game being over.
+ */
+export function renderExpiredBoardPage(reason: string, detail: string): string {
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>${escapeHtml(env.BRAND_NAME)}</title>
+<link rel="icon" type="image/png" sizes="32x32" href="${apiPath('/public/brand/images/favicon-32.png')}">
+<meta name="theme-color" content="#7d0f22">
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+         background: #f6f3ef; color: #1e2733; margin: 0; padding: 40px 18px;
+         display: grid; place-items: center; min-height: 100vh; }
+  .card { background: #fff; border-radius: 18px; padding: 34px 26px; max-width: 380px; width: 100%;
+          text-align: center; box-shadow: 0 2px 14px rgba(20,25,35,.09); }
+  .big { font-size: 44px; }
+  h1 { font-size: 20px; margin: 14px 0 8px; color: #7d0f22; }
+  p { color: #6b7684; font-size: 14.5px; line-height: 1.6; margin: 0; }
+  a { display: block; margin-top: 24px; padding: 14px; border-radius: 12px; background: #1f9d55;
+      color: #fff; text-decoration: none; font-weight: 700; }
+</style></head>
+<body><div class="card">
+  <div class="big">🎲</div>
+  <h1>${escapeHtml(reason)}</h1>
+  <p>${escapeHtml(detail)}</p>
+  <a href="${whatsappReturnUrl()}">Back to WhatsApp</a>
+</div></body></html>`;
+}
+
 export function renderBoardPage(token: string): string {
   const base = `${apiPath('/public/board')}/${encodeURIComponent(token)}`;
 
@@ -302,7 +339,8 @@ export function renderBoardPage(token: string): string {
       inviteMsg: function (brand, url) { return 'Join my ' + brand + ' Tambola game! Tap: ' + url; },
       rotate: 'Turn your phone sideways',
       rotateWhy: ' — you will see the number and your whole ticket at the same time.',
-      notNow: 'Not now', switchTo: 'हिंदी'
+      notNow: 'Not now', switchTo: 'हिंदी',
+      gameGone: 'This game is no longer available. Send play on WhatsApp to start a new one.'
     },
     hi: {
       loading: 'आपका टिकट लाया जा रहा है…', reconnecting: 'फिर से जुड़ रहे हैं…',
@@ -338,7 +376,8 @@ export function renderBoardPage(token: string): string {
       inviteMsg: function (brand, url) { return brand + ' पर मेरे तंबोला गेम में शामिल हों! टैप करें: ' + url; },
       rotate: 'अपना फ़ोन आड़ा घुमाएँ',
       rotateWhy: ' — नंबर और आपका पूरा टिकट एक साथ दिखेगा।',
-      notNow: 'अभी नहीं', switchTo: 'English'
+      notNow: 'अभी नहीं', switchTo: 'English',
+      gameGone: 'यह गेम अब उपलब्ध नहीं है। नया गेम शुरू करने के लिए WhatsApp पर play भेजें।'
     }
   };
 
@@ -412,14 +451,34 @@ export function renderBoardPage(token: string): string {
 
   function refresh() {
     return fetch(BASE + '/state', { headers: { 'Accept': 'application/json' } })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (r.status === 404 || r.status === 410) { showGone(); return null; }
+        return r.json();
+      })
       .then(function (j) {
+        if (!j) return;
         offlineEl.classList.remove('show');
         state = j.data || j;
         render();
         retune();
       })
       .catch(function () { offlineEl.classList.add('show'); });
+  }
+
+  /**
+   * The game went away while the page was open.
+   *
+   * Distinguished from a network blip on purpose: a 404 means there is nothing
+   * to come back to, and leaving "Reconnecting…" up forever tells the player
+   * the product is broken when the game is simply over.
+   */
+  function showGone() {
+    clearInterval(timer);
+    app.innerHTML = '<div class="card"><div class="over">' +
+      '<div class="big">🎲</div><h1>' + t().over(state && state.roomCode ? state.roomCode : '', 0) + '</h1>' +
+      '<p>' + t().gameGone + '</p>' +
+      '<a class="cta" href="' + WA + '">' + t().backToWa + '</a>' +
+      '</div></div>';
   }
 
   function ticketHtml(s) {
@@ -592,21 +651,26 @@ export function renderBoardPage(token: string): string {
     try { sessionStorage.setItem('mp.rotate', '1'); } catch (e) {}
   }
 
+  // The tapped button is 'btn', not 't'. It used to be 't', which silently
+  // shadowed the translation accessor of the same name once the page became
+  // bilingual — every t() in here called a DOM element as a function, threw,
+  // and killed the handler. Leave and Invite stopped working with no error
+  // anyone could see.
   document.addEventListener('click', function (e) {
-    var t = e.target.closest ? e.target.closest('button') : null;
-    if (!t) return;
-    if (t.dataset.lang) { setLang(t.dataset.lang); }
-    else if (t.dataset.dismissRotate) { dismissRotate(); }
-    else if (t.dataset.start) { t.disabled = true; post('/start', {}); }
-    else if (t.dataset.invite) {
+    var btn = e.target.closest ? e.target.closest('button') : null;
+    if (!btn) return;
+    if (btn.dataset.lang) { setLang(btn.dataset.lang); }
+    else if (btn.dataset.dismissRotate) { dismissRotate(); }
+    else if (btn.dataset.start) { btn.disabled = true; post('/start', {}); }
+    else if (btn.dataset.invite) {
       var msg = t().inviteMsg(state.brand, state.inviteUrl);
       if (navigator.share) { navigator.share({ text: msg }).catch(function () {}); }
       else if (navigator.clipboard) { navigator.clipboard.writeText(msg); toast(t().inviteCopied); }
       else { window.open(state.inviteUrl, '_blank'); }
     }
-    else if (t.dataset.ack) { t.disabled = true; post('/ack', { hasNumber: t.dataset.ack === 'yes' }); }
-    else if (t.dataset.claim) { t.disabled = true; post('/claim', { claimType: t.dataset.claim }); }
-    else if (t.dataset.exit) {
+    else if (btn.dataset.ack) { btn.disabled = true; post('/ack', { hasNumber: btn.dataset.ack === 'yes' }); }
+    else if (btn.dataset.claim) { btn.disabled = true; post('/claim', { claimType: btn.dataset.claim }); }
+    else if (btn.dataset.exit) {
       if (confirm(t().exitConfirm)) {
         post('/exit', {});
       }

@@ -5,6 +5,7 @@ import { logger } from '../utils/logger.js';
 import { postLedgerEntry } from './wallet.service.js';
 import { notify } from './notification.service.js';
 
+
 /**
  * Razorpay payments.
  *
@@ -73,6 +74,8 @@ export interface CreatedOrder {
   id: string;
   orderId: string;
   amountPaise: number;
+  basePaise: number;
+  gstPaise: number;
   currency: string;
   keyId: string;
 }
@@ -143,6 +146,8 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
     id: row!.id,
     orderId,
     amountPaise: totalPaise,
+    basePaise,
+    gstPaise,
     currency: 'INR',
     keyId: env.RAZORPAY_KEY_ID,
   };
@@ -342,4 +347,187 @@ export async function listPaymentEvents(limit: number): Promise<Record<string, u
        FROM payment_events ORDER BY received_at DESC LIMIT $1`,
     [limit],
   );
+}
+
+/** One order, for the checkout page. */
+export async function getOrderForCheckout(orderId: string): Promise<Record<string, unknown> | null> {
+  return queryOne(
+    `SELECT p.order_id, p.amount_paise, p.base_paise, p.gst_paise, p.gst_percent,
+            p.status, p.plan_key, p.credited_at,
+            COALESCE(pl.display_name, 'you') AS player_name,
+            (SELECT name FROM plans WHERE plan_key = p.plan_key) AS plan_name
+       FROM payments p LEFT JOIN players pl ON pl.id = p.player_id
+      WHERE p.order_id = $1`,
+    [orderId],
+  );
+}
+
+/* -------------------------------------------------- browser confirmation */
+
+/**
+ * Verifies the signature Razorpay hands back to the browser.
+ *
+ * HMAC-SHA256 of "orderId|paymentId" with the key secret. This is not a weaker
+ * check than the webhook: only Razorpay and this server know the secret, so a
+ * player cannot forge it from the developer console. It is simply the same
+ * assurance arriving by a different route — and a faster one, which is what
+ * lets the page confirm and return to WhatsApp immediately.
+ *
+ * What it does NOT cover is the payment that succeeds while the browser is gone
+ * — a closed tab, a locked phone, a UPI app that never returns. Only the
+ * webhook catches those, which is why both paths exist and both credit through
+ * the same idempotency key.
+ */
+export function verifyPaymentSignature(
+  orderId: string,
+  paymentId: string,
+  signature: string,
+): boolean {
+  if (!env.RAZORPAY_KEY_SECRET || !signature) return false;
+
+  const expected = createHmac('sha256', env.RAZORPAY_KEY_SECRET)
+    .update(`${orderId}|${paymentId}`)
+    .digest();
+
+  let given: Buffer;
+  try {
+    given = Buffer.from(signature, 'hex');
+  } catch {
+    return false;
+  }
+
+  return given.length === expected.length && timingSafeEqual(given, expected);
+}
+
+export interface ConfirmResult {
+  ok: boolean;
+  alreadyCredited: boolean;
+  creditsPaise: number;
+  reason?: string;
+}
+
+/**
+ * Credits a payment confirmed by the browser.
+ *
+ * Shares the row lock and the idempotency key with the webhook path, so a
+ * payment confirmed by both — which is the normal case — credits exactly once,
+ * whichever arrives first.
+ */
+export async function confirmPayment(
+  orderId: string,
+  paymentId: string,
+  signature: string,
+): Promise<ConfirmResult> {
+  if (!verifyPaymentSignature(orderId, paymentId, signature)) {
+    logger.error({ orderId, paymentId }, 'browser payment signature invalid — refusing to credit');
+    return { ok: false, alreadyCredited: false, creditsPaise: 0, reason: 'signature invalid' };
+  }
+
+  return withTransaction(async (client) => {
+    const payment = await queryOne<{
+      id: string;
+      player_id: string | null;
+      wa_id: string | null;
+      credits_paise: number;
+      amount_paise: number;
+      credited_at: Date | null;
+    }>(
+      `SELECT id, player_id, wa_id, credits_paise, amount_paise, credited_at
+         FROM payments WHERE order_id = $1 FOR UPDATE`,
+      [orderId],
+      client,
+    );
+
+    if (!payment) {
+      return { ok: false, alreadyCredited: false, creditsPaise: 0, reason: 'unknown order' };
+    }
+
+    if (payment.credited_at) {
+      // The webhook got here first. Not an error — the player still paid once.
+      return { ok: true, alreadyCredited: true, creditsPaise: payment.credits_paise };
+    }
+
+    await query(
+      `UPDATE payments
+          SET status = 'paid', payment_id = COALESCE(payment_id, $2),
+              paid_at = now(), credited_at = now(), updated_at = now()
+        WHERE id = $1`,
+      [payment.id, paymentId],
+      client,
+    );
+
+    if (payment.player_id) {
+      await postLedgerEntry(
+        {
+          playerId: payment.player_id,
+          amountPaise: payment.credits_paise,
+          kind: 'topup',
+          referenceType: 'razorpay',
+          referenceId: paymentId,
+          idempotencyKey: `razorpay:${paymentId}`,
+          note: 'Razorpay top-up',
+        },
+        client,
+      );
+    }
+
+    void notify({
+      trigger: 'payment.received',
+      summary: `Rs ${(payment.amount_paise / 100).toFixed(2)} received from +${payment.wa_id ?? '?'}`,
+      playerId: payment.player_id,
+      detail: { orderId, paymentId, amountPaise: payment.amount_paise },
+    });
+
+    logger.info({ orderId, paymentId }, 'payment confirmed in browser and credited');
+    return { ok: true, alreadyCredited: false, creditsPaise: payment.credits_paise };
+  });
+}
+
+/**
+ * The open order for a player and plan, creating one only if needed.
+ *
+ * The checkout page shows two options and the host picks on the page, so both
+ * orders must exist before either is chosen. Re-using an unpaid order rather
+ * than minting a new one on every page load keeps the Razorpay dashboard
+ * readable — a host who opens the link three times should not leave three
+ * abandoned orders behind.
+ */
+export async function findOrCreateOrder(input: CreateOrderInput): Promise<CreatedOrder> {
+  const existing = await queryOne<{
+    order_id: string;
+    amount_paise: number;
+    base_paise: number;
+    gst_paise: number;
+  }>(
+    `SELECT order_id, amount_paise, base_paise, gst_paise
+       FROM payments
+      WHERE player_id = $1 AND plan_key = $2 AND status = 'created'
+        AND credited_at IS NULL
+        AND created_at > now() - interval '2 hours'
+      ORDER BY created_at DESC LIMIT 1`,
+    [input.playerId, input.planKey ?? null],
+  );
+
+  if (existing) {
+    return {
+      id: existing.order_id,
+      orderId: existing.order_id,
+      amountPaise: existing.amount_paise,
+      basePaise: existing.base_paise,
+      gstPaise: existing.gst_paise,
+      currency: 'INR',
+      keyId: env.RAZORPAY_KEY_ID,
+    };
+  }
+
+  return createOrder(input);
+}
+
+/** The order behind a payment id, for confirming that it belongs to this host. */
+export async function orderBelongsTo(orderId: string, playerId: string): Promise<boolean> {
+  const row = await queryOne<{ n: string }>(
+    `SELECT count(*)::text AS n FROM payments WHERE order_id = $1 AND player_id = $2`,
+    [orderId, playerId],
+  );
+  return Number(row?.n ?? 0) > 0;
 }

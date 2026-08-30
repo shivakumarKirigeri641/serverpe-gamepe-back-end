@@ -16,7 +16,7 @@ import {
 import { displayNameOf, findPlayerById, publicName } from '../services/player.service.js';
 import { handleAck, handleClaim, handleLeave, handleStart } from '../services/conversation.service.js';
 import { nicknameFor } from '../games/tambola/nicknames.js';
-import { renderBoardPage } from './board-page.js';
+import { renderBoardPage, renderExpiredBoardPage } from './board-page.js';
 import { inviteUrl, verifyBoardToken } from './board-token.js';
 import { clientIp } from './admin-auth.js';
 import { markBoardActive } from '../services/presence.service.js';
@@ -57,6 +57,9 @@ async function withinRateLimit(token: string, action: string, max: number, secon
   }
 }
 
+/** How long a finished game's board stays readable. */
+const BOARD_GRACE_MS = 24 * 60 * 60 * 1000;
+
 export function createBoardRouter(): Router {
   const router = Router();
 
@@ -79,6 +82,42 @@ export function createBoardRouter(): Router {
       userAgent: req.header('user-agent') ?? null,
       properties: { referer: req.header('referer') ?? null },
     });
+
+    // A link outlives the game it was made for. Check the game is still worth
+    // opening before rendering a live board that will never receive an update.
+    const game = await findGameById(payload.gameId);
+
+    if (!game) {
+      res
+        .status(410)
+        .type('html')
+        .set('Cache-Control', 'no-store')
+        .send(
+          renderExpiredBoardPage(
+            'This game link has expired',
+            'The game it belonged to is no longer available. Send *play* on WhatsApp to start a new one.',
+          ),
+        );
+      return;
+    }
+
+    // Finished games stay open for a day: the result screen is part of the
+    // game, and players come back to it to see who won. After that the link is
+    // just a stale bookmark.
+    const endedAt = game.ended_at ? new Date(game.ended_at).getTime() : null;
+    if (endedAt && Date.now() - endedAt > BOARD_GRACE_MS) {
+      res
+        .status(410)
+        .type('html')
+        .set('Cache-Control', 'no-store')
+        .send(
+          renderExpiredBoardPage(
+            game.status === 'cancelled' ? 'That game was cancelled' : 'That game has finished',
+            'Results are only available for a day after a game ends. Send *play* on WhatsApp to start a new one.',
+          ),
+        );
+      return;
+    }
 
     // Fire and forget: the board renders first, the lookup catches up.
     void recordDeviceContext(payload.playerId, clientIp(req), req.header('user-agent') ?? null);

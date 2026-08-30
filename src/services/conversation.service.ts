@@ -52,10 +52,11 @@ import {
 import { logInbound } from './message.service.js';
 import { isBlocked, markBlockNotified, needsBlockNotice } from './moderation.service.js';
 import { claimButtonId, maybeAdvanceEarly, parseFlowToken } from './round.service.js';
-import { boardUrl, inviteUrl, policiesUrl } from '../http/board-token.js';
+import { boardUrl, checkoutUrl, inviteUrl, policiesUrl } from '../http/board-token.js';
 import { getStats, getWeeklyLeaderboard, leaderboardName, recordPrizeWon } from './stats.service.js';
 import { buildPlayerReport } from './report.service.js';
 import { getBalance, getFreeGames, walletHistory } from './wallet.service.js';
+import { activePass, isChargingLive, priceForPlayers } from './pricing.service.js';
 import { notify } from './notification.service.js';
 
 /**
@@ -251,6 +252,15 @@ function lobbyCount(game: GameRow, members: number): string {
  * not mistaken for a join.
  */
 function findRoomCodeIn(text: string): string | null {
+  // A command the bot understands is never a room code, whatever it looks like.
+  //
+  // Room codes are six characters from a confusable-free alphabet, and 'STATUS'
+  // happens to be six characters all of which are in it — so tapping "Status"
+  // was answered with "No game found with code STATUS". TICKET, WALLET and
+  // CANCEL escape only because the alphabet omits I, L and O, which is luck
+  // rather than design. Checking the command list first removes the luck.
+  if (KNOWN_COMMANDS.has(text.trim().toLowerCase())) return null;
+
   const tokens = text.toUpperCase().match(/[A-Z0-9]{4,10}/g) ?? [];
   const looksLikeJoin = /\bjoin\b/i.test(text) || tokens.length === 1;
   if (!looksLikeJoin) return null;
@@ -314,26 +324,72 @@ async function sendPlayerCountPrompt(
  * can see where this is going. Tapping one explains and re-offers the picker
  * rather than silently doing nothing.
  */
+/**
+ * What a room of this size costs, and how to pay for it.
+ *
+ * Replaces the old plan list. A host does not think in plan names — they think
+ * "there are about 35 of us" — so the band is derived from the number they
+ * already typed, and the two things they can buy are shown as one price each.
+ *
+ * While the trial is running, or charging is switched off, this is skipped
+ * entirely and the room is created free. That check lives in one place so a
+ * half-configured payment setup can never accidentally start charging people.
+ */
 async function sendPlanPrompt(player: PlayerRow, gameKey: string, players: number): Promise<void> {
-  const plans = await listActivePlans();
-
-  if (plans.length === 0) {
-    // No plans configured at all: do not block play over an admin oversight.
+  if (!isChargingLive()) {
     return handlePlay(player, gameKey, players);
   }
 
-  await setPending(player.wa_id, { awaiting: 'plan', gameKey, players });
+  // A day pass already covers this room: no second payment for the same day.
+  const pass = await activePass(player.id);
+  if (pass && Number(pass['max_players'] ?? 0) >= players) {
+    await sendText(
+      player.wa_id,
+      [
+        `✅ Your *day pass* covers this room.`,
+        '',
+        `Valid until ${appTimeString(new Date(String(pass['expires_at'])))}. Starting your game now.`,
+      ].join('\n'),
+      { playerId: player.id },
+    );
+    return handlePlay(player, gameKey, players);
+  }
 
-  await sendList(
-    player.wa_id,
-    [
-      `*Choose a plan* for your ${players}-player game.`,
+  const pricing = await priceForPlayers(players);
+  const url = checkoutUrl(player.id, players);
+
+  if (!pricing.single || !url) {
+    // Never leave a host stuck behind a pricing problem that is ours.
+    logger.warn({ players }, 'no plan or checkout url for room size, starting free');
+    return handlePlay(player, gameKey, players);
+  }
+
+  const rupees = (paise: number): string => (paise / 100).toFixed(0);
+
+  const lines = [
+    `*${players} players* · ${pricing.bandLabel}`,
+    '',
+    `🎟️  *One game* — ₹${rupees(pricing.single.amountPaise)}`,
+  ];
+
+  if (pricing.unlimited) {
+    lines.push(
+      `🎉  *Day pass* — ₹${rupees(pricing.unlimited.amountPaise)}` +
+        (pricing.savingPercent ? `  _(save ${pricing.savingPercent}%)_` : ''),
       '',
-      `_Free Trial is running until ${trialEndLabel()}._`,
-    ].join('\n'),
-    'Choose a plan',
-    plans.slice(0, 10).map(planRow),
-    'Plans',
+      '_Day pass = unlimited games for 24 hours._',
+    );
+  }
+
+  lines.push('', '_Prices include GST. Tap below to see the breakup and pay._');
+
+  await sendCtaUrl(
+    player.wa_id,
+    lines.join('\n'),
+    'Review & Pay',
+    url,
+    { playerId: player.id },
+    `${players}-player room`,
   );
 }
 
@@ -1395,7 +1451,18 @@ async function handleAction(player: PlayerRow, actionId: string): Promise<void> 
       return handleLegalAction(player, rest);
 
     case 'start':
-      return handleStart(player, rest[0] as string);
+      // A tap on a Start button from a game that has since ended. Without this
+      // the GameError escaped to the top-level handler and the host got either
+      // nothing or a generic failure — for the commonest stale tap there is.
+      try {
+        return await handleStart(player, rest[0] as string);
+      } catch (err) {
+        if (err instanceof GameError) {
+          await sendText(player.wa_id, `⚠️ ${err.message}`, { playerId: player.id });
+          return sendMainMenu(player);
+        }
+        throw err;
+      }
 
     case 'ack': {
       const [gameId, seqRaw, yn] = rest;
@@ -1452,11 +1519,23 @@ async function handleText(player: PlayerRow, rawText: string): Promise<void> {
     try {
       return await handleJoin(player, code);
     } catch (err) {
-      // Wrong-but-well-formed code: keep the prompt alive for another try.
       if (err instanceof GameError) {
-        await setPending(player.wa_id, pending);
-        await sendText(player.wa_id, `⚠️ ${err.message}\n\nSend another code, or *menu* to go back.`);
-        return;
+        // A mistyped code deserves another go. A game already in progress does
+        // not, however many times it is typed — and re-arming the prompt after
+        // "wait for it to finish" is exactly what sent people round the same
+        // loop until they gave up.
+        if (err.retryable) {
+          await setPending(player.wa_id, pending);
+          await sendText(
+            player.wa_id,
+            `⚠️ ${err.message}\n\nSend another code, or *menu* to go back.`,
+            { playerId: player.id },
+          );
+          return;
+        }
+
+        await sendText(player.wa_id, `⏳ ${err.message}`, { playerId: player.id });
+        return sendMainMenu(player);
       }
       throw err;
     }
