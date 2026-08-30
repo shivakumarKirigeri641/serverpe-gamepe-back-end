@@ -19,6 +19,9 @@ export function renderBoardPage(token: string): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex,nofollow">
+<link rel="icon" type="image/png" sizes="32x32" href="${apiPath('/public/brand/images/favicon-32.png')}">
+<link rel="apple-touch-icon" sizes="180x180" href="${apiPath('/public/brand/images/apple-touch-icon-180.png')}">
+<meta name="theme-color" content="#7d0f22">
 <title>${escapeHtml(env.BRAND_NAME)} — Your Ticket</title>
 <style>
   :root {
@@ -44,6 +47,15 @@ export function renderBoardPage(token: string): string {
   .bar { background: linear-gradient(135deg, var(--maroon), var(--maroon-dark)); color: #fff; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
   .bar strong { font-size: 18px; letter-spacing: .3px; }
   .bar span { font-size: 13px; opacity: .9; }
+  /* Legible but quiet: it should be findable without competing with the
+     called number, which is the only thing that matters mid-round. */
+  .langbtn { flex: 0 0 auto; margin-left: 8px; padding: 4px 10px; font-size: 12px; font-weight: 700;
+             border-radius: 999px; border: 1px solid rgba(255,255,255,.45);
+             background: rgba(255,255,255,.14); color: #fff; cursor: pointer; }
+  .langbtn:active { transform: translateY(1px); }
+  /* Devanagari needs a little more room between lines than Latin. */
+  html[lang="hi"] body { line-height: 1.6; }
+  html[lang="hi"] button { line-height: 1.35; }
 
   .call { text-align: center; padding: 20px 16px 18px; }
   .call .num {
@@ -243,6 +255,108 @@ export function renderBoardPage(token: string): string {
   var offlineEl = document.getElementById('offline');
   var state = null, busy = false, timer = null, lastSeq = -1, pollMs = 3000;
 
+  /**
+   * Every word on this page, in both languages.
+   *
+   * Hindi is offered during play as well as before it, not just at the lobby:
+   * the strings are few and fixed, so there is no reason to switch a player back
+   * to English at the exact moment the game starts and they most need to read
+   * quickly. Numbers stay as digits in both — a called number is read at a
+   * glance, and Devanagari numerals would slow that down for no gain.
+   *
+   * Left in Latin in both: the brand, the support address and the WhatsApp
+   * name. Those are recognised, not read.
+   */
+  var T = {
+    en: {
+      loading: 'Loading your ticket…', reconnecting: 'Reconnecting…',
+      room: 'Room', ticket: 'Ticket', called: 'called', of: 'of',
+      ask: function (n) { return 'Is ' + n + ' on your ticket?'; },
+      yes: 'Yes, I have it', no: 'Not on my ticket',
+      answered: 'Answered ✓',
+      fetching: 'Everyone answered — fetching the next number',
+      waiting: function (n) { return 'Waiting for ' + n + ' more player' + (n === 1 ? '' : 's'); },
+      answeredOf: function (a, b) { return a + ' of ' + b + ' answered'; },
+      nextIn: function (s) { return ' · next number in up to ' + s + 's'; },
+      marked: function (a, b) { return a + ' of ' + b + ' marked'; },
+      prizes: 'Prizes', claim: 'Claim',
+      calledSoFar: function (n) { return 'Called so far (' + n + ')'; },
+      exit: 'Exit this game',
+      exitConfirm: 'Leave this game? You will stop receiving numbers and cannot rejoin this round.',
+      waitingToStart: 'Waiting to start',
+      joined: function (n) { return 'player' + (n === 1 ? '' : 's') + ' joined'; },
+      minToStart: function (n) { return 'Minimum ' + n + ' to start'; },
+      start: 'Start game',
+      needMore: function (n) { return 'Need ' + n + ' more'; },
+      hostStarts: 'The host has to start the game.',
+      hostStartsSub: 'Hang on a few seconds — this page starts by itself.',
+      invite: 'Invite friends', leave: 'Leave',
+      selfUpdates: 'This page updates by itself as friends join.',
+      won: 'Congratulations!', thanks: 'Thanks for playing!',
+      over: function (room, n) { return 'Room ' + room + ' · ' + n + ' numbers called'; },
+      noPrizes: 'No prizes were claimed.',
+      backToWa: 'Back to WhatsApp — tell us how it went',
+      closePage: 'You can close this page.',
+      inviteCopied: 'Invite copied — paste it to your friends',
+      unreachable: 'Could not reach the game. Try again.',
+      inviteMsg: function (brand, url) { return 'Join my ' + brand + ' Tambola game! Tap: ' + url; },
+      rotate: 'Turn your phone sideways',
+      rotateWhy: ' — you will see the number and your whole ticket at the same time.',
+      notNow: 'Not now', switchTo: 'हिंदी'
+    },
+    hi: {
+      loading: 'आपका टिकट लाया जा रहा है…', reconnecting: 'फिर से जुड़ रहे हैं…',
+      room: 'रूम', ticket: 'टिकट', called: 'बोले गए', of: 'में से',
+      ask: function (n) { return 'क्या ' + n + ' आपके टिकट पर है?'; },
+      yes: 'हाँ, मेरे पास है', no: 'मेरे टिकट पर नहीं है',
+      answered: 'उत्तर मिल गया ✓',
+      fetching: 'सबने उत्तर दे दिया — अगला नंबर आ रहा है',
+      waiting: function (n) { return n + ' और खिलाड़ियों का इंतज़ार'; },
+      answeredOf: function (a, b) { return b + ' में से ' + a + ' ने उत्तर दिया'; },
+      nextIn: function (s) { return ' · अगला नंबर ' + s + ' सेकंड में'; },
+      marked: function (a, b) { return b + ' में से ' + a + ' कट गए'; },
+      prizes: 'इनाम', claim: 'दावा करें',
+      calledSoFar: function (n) { return 'अब तक बोले गए (' + n + ')'; },
+      exit: 'इस गेम से बाहर निकलें',
+      exitConfirm: 'इस गेम से बाहर निकलें? आपको और नंबर नहीं मिलेंगे और आप इस राउंड में दोबारा शामिल नहीं हो सकते।',
+      waitingToStart: 'शुरू होने का इंतज़ार',
+      joined: function () { return 'खिलाड़ी शामिल हुए'; },
+      minToStart: function (n) { return 'शुरू करने के लिए कम से कम ' + n; },
+      start: 'गेम शुरू करें',
+      needMore: function (n) { return n + ' और चाहिए'; },
+      hostStarts: 'होस्ट को गेम शुरू करना है।',
+      hostStartsSub: 'कुछ सेकंड रुकें — यह पेज अपने आप शुरू हो जाएगा।',
+      invite: 'दोस्तों को बुलाएँ', leave: 'बाहर निकलें',
+      selfUpdates: 'दोस्तों के शामिल होते ही यह पेज अपने आप अपडेट होता है।',
+      won: 'बधाई हो!', thanks: 'खेलने के लिए धन्यवाद!',
+      over: function (room, n) { return 'रूम ' + room + ' · ' + n + ' नंबर बोले गए'; },
+      noPrizes: 'किसी ने इनाम का दावा नहीं किया।',
+      backToWa: 'WhatsApp पर लौटें — हमें बताएँ कैसा रहा',
+      closePage: 'आप यह पेज बंद कर सकते हैं।',
+      inviteCopied: 'निमंत्रण कॉपी हो गया — दोस्तों को भेजें',
+      unreachable: 'गेम से संपर्क नहीं हो सका। फिर कोशिश करें।',
+      inviteMsg: function (brand, url) { return brand + ' पर मेरे तंबोला गेम में शामिल हों! टैप करें: ' + url; },
+      rotate: 'अपना फ़ोन आड़ा घुमाएँ',
+      rotateWhy: ' — नंबर और आपका पूरा टिकट एक साथ दिखेगा।',
+      notNow: 'अभी नहीं', switchTo: 'English'
+    }
+  };
+
+  var L = 'en';
+  try { L = localStorage.getItem('mp.lang') === 'hi' ? 'hi' : 'en'; } catch (e) {}
+  function t() { return T[L]; }
+
+  function setLang(next) {
+    L = next;
+    try { localStorage.setItem('mp.lang', next); } catch (e) {}
+    document.documentElement.setAttribute('lang', next);
+    rotateEl.querySelector('.msg').innerHTML =
+      '<strong>' + t().rotate + '</strong>' + t().rotateWhy;
+    rotateEl.querySelector('button').textContent = t().notNow;
+    offlineEl.textContent = t().reconnecting;
+    render();
+  }
+
   var rotateEl = document.getElementById('rotate');
   var rotateDone = false;
   try { rotateDone = sessionStorage.getItem('mp.rotate') === '1'; } catch (e) {}
@@ -252,6 +366,19 @@ export function renderBoardPage(token: string): string {
     window.matchMedia('(orientation: landscape)').addEventListener('change', function (e) {
       if (e.matches) dismissRotate();
     });
+  }
+
+  /**
+   * The language switch.
+   *
+   * Kept in the top bar on every screen rather than only on the lobby: a player
+   * who realises mid-game that they would rather read Hindi should not have to
+   * leave the round to change it. Everything on this page is re-rendered from
+   * state on each tick, so switching is instant and loses nothing.
+   */
+  function langPill() {
+    return ' <button class="langbtn" data-lang="' + (L === 'hi' ? 'en' : 'hi') + '">' +
+      t().switchTo + '</button>';
   }
 
   function esc(s) {
@@ -280,7 +407,7 @@ export function renderBoardPage(token: string): string {
         if (j && j.message) toast(j.message);
         return refresh();
       })
-      .catch(function () { busy = false; toast('Could not reach the game. Try again.'); });
+      .catch(function () { busy = false; toast(t().unreachable); });
   }
 
   function refresh() {
@@ -318,7 +445,7 @@ export function renderBoardPage(token: string): string {
       var n = s.called[i];
       out += '<b class="' + (s.myNumbers.indexOf(n) >= 0 ? 'mine' : '') + '">' + n + '</b>';
     }
-    return '<div class="card"><h2>Called so far (' + s.called.length + ')</h2><div class="called">' + out + '</div></div>';
+    return '<div class="card"><h2>' + t().calledSoFar(s.called.length) + '</h2><div class="called">' + out + '</div></div>';
   }
 
   function prizesHtml(s) {
@@ -328,10 +455,10 @@ export function renderBoardPage(token: string): string {
       items += '<li><span class="name">' + esc(p.label) + '</span>' +
         (p.wonBy
           ? '<span class="won">' + esc(p.wonBy) + '</span>'
-          : '<button data-claim="' + esc(p.key) + '">Claim</button>') +
+          : '<button data-claim="' + esc(p.key) + '">' + t().claim + '</button>') +
         '</li>';
     }
-    return '<div class="card"><h2>Prizes</h2><ul class="prizes">' + items + '</ul></div>';
+    return '<div class="card"><h2>' + t().prizes + '</h2><ul class="prizes">' + items + '</ul></div>';
   }
 
   function lobbyHtml(s) {
@@ -342,39 +469,40 @@ export function renderBoardPage(token: string): string {
     var action = s.isHost
       ? '<div class="row" style="margin-top:14px">' +
           '<button class="primary" data-start="1"' + (enough ? '' : ' disabled') + '>' +
-          (enough ? 'Start game' : 'Need ' + (s.minPlayers - s.playersJoined) + ' more') + '</button></div>'
-      : '<div class="answered" style="margin-top:12px"><strong>The host has to start the game.</strong>' +
-        '<br>Hang on a few seconds — this page starts by itself.</div>';
+          (enough ? t().start : t().needMore(s.minPlayers - s.playersJoined)) + '</button></div>'
+      : '<div class="answered" style="margin-top:12px"><strong>' + t().hostStarts + '</strong>' +
+        '<br>' + t().hostStartsSub + '</div>';
 
     return '<div class="card"><div class="bar"><strong>' + esc(s.brand) + '</strong>' +
-      '<span>Waiting to start</span></div>' +
+      '<span>' + t().waitingToStart + langPill() + '</span></div>' +
       '<div class="lobby">' +
         '<div class="code">' + esc(s.roomCode) + '</div>' +
         '<div class="count">' + s.playersJoined + target + '</div>' +
-        '<div class="of">player' + (s.playersJoined === 1 ? '' : 's') + ' joined</div>' +
-        '<div class="need">Minimum ' + s.minPlayers + ' to start</div>' +
+        '<div class="of">' + t().joined(s.playersJoined) + '</div>' +
+        '<div class="need">' + t().minToStart(s.minPlayers) + '</div>' +
         '<div class="names">' + names + '</div>' +
         action +
         '<div class="row" style="margin-top:8px">' +
-          '<button class="ghost" data-invite="1">Invite friends</button>' +
-          '<button class="danger" data-exit="1">Leave</button>' +
+          '<button class="ghost" data-invite="1">' + t().invite + '</button>' +
+          '<button class="danger" data-exit="1">' + t().leave + '</button>' +
         '</div>' +
       '</div></div>' +
-      '<div class="footer">This page updates by itself as friends join.</div>';
+      '<div class="footer">' + t().selfUpdates + '</div>';
   }
 
   function overHtml(s) {
     var lines = s.prizes.filter(function (p) { return p.wonBy; })
       .map(function (p) { return esc(p.label) + ' — ' + esc(p.wonBy); }).join('<br>');
-    return '<div class="card"><div class="over">' +
+    return '<div class="card"><div class="bar"><strong>' + esc(s.brand) + '</strong>' +
+      '<span>' + langPill() + '</span></div><div class="over">' +
       '<div class="big">' + (s.iWon ? '🏆' : '🎉') + '</div>' +
-      '<h1>' + (s.iWon ? 'Congratulations!' : 'Thanks for playing!') + '</h1>' +
-      '<p>Room ' + esc(s.roomCode) + ' · ' + s.called.length + ' numbers called</p>' +
-      (lines ? '<p>' + lines + '</p>' : '<p>No prizes were claimed.</p>') +
-      '<a class="cta" href="' + WA + '">Back to WhatsApp — tell us how it went</a>' +
+      '<h1>' + (s.iWon ? t().won : t().thanks) + '</h1>' +
+      '<p>' + t().over(esc(s.roomCode), s.called.length) + '</p>' +
+      (lines ? '<p>' + lines + '</p>' : '<p>' + t().noPrizes + '</p>') +
+      '<a class="cta" href="' + WA + '">' + t().backToWa + '</a>' +
       '<a class="promo" href="' + PROMO_URL + '" target="_blank" rel="noopener">' + esc(PROMO_TEXT) + '</a>' +
       '</div></div>' +
-      '<div class="footer">You can close this page.</div>';
+      '<div class="footer">' + t().closePage + '</div>';
   }
 
   function render() {
@@ -389,12 +517,13 @@ export function renderBoardPage(token: string): string {
     if (isNew) lastSeq = s.currentSeq;
 
     var head = '<div class="card play"><div class="bar"><strong>' + esc(s.brand) + '</strong>' +
-      '<span>Room ' + esc(s.roomCode) + ' · Ticket ' + s.entryNo + '</span></div>';
+      '<span>' + t().room + ' ' + esc(s.roomCode) + ' · ' + t().ticket + ' ' + s.entryNo +
+      langPill() + '</span></div>';
 
     var call = '<div class="call' + (isNew ? ' flash' : '') + '">' +
       '<div class="num' + (isNew ? ' blink' : '') + '">' + (s.currentNumber || '–') + '</div>' +
       '<div class="nick">' + esc(s.currentNickname || '') + '</div>' +
-      '<div class="progress">' + s.currentSeq + ' of ' + s.totalNumbers + ' called</div></div>';
+      '<div class="progress">' + s.currentSeq + ' ' + t().of + ' ' + s.totalNumbers + ' ' + t().called + '</div></div>';
 
     var ask = '';
     if (s.status === 'running' && s.currentNumber) {
@@ -402,37 +531,37 @@ export function renderBoardPage(token: string): string {
         var pct = s.players ? Math.round((s.answeredCount / s.players) * 100) : 100;
         var fetching = s.waitingFor === 0;
         var msg = fetching
-          ? 'Everyone answered — fetching the next number'
-          : 'Waiting for ' + s.waitingFor + ' more player' + (s.waitingFor === 1 ? '' : 's');
+          ? t().fetching
+          : t().waiting(s.waitingFor);
         // The buttons stay on screen but disabled: removing them made it look
         // like the game had moved on, and the player could not see what they
         // had picked.
         var locked = '<div class="ask"><div class="row">' +
-          '<button class="primary' + (s.myAnswer === true ? ' picked' : '') + '" disabled>Yes, I have it</button>' +
-          '<button class="ghost' + (s.myAnswer === false ? ' picked' : '') + '" disabled>Not on my ticket</button>' +
+          '<button class="primary' + (s.myAnswer === true ? ' picked' : '') + '" disabled>' + t().yes + '</button>' +
+          '<button class="ghost' + (s.myAnswer === false ? ' picked' : '') + '" disabled>' + t().no + '</button>' +
           '</div></div>';
 
         ask = locked + '<div class="waiting' + (fetching ? ' fetching' : '') + '">' +
-          '<div class="tick">Answered ✓</div>' +
+          '<div class="tick">' + t().answered + '</div>' +
           '<div class="msg dots">' + msg + '</div>' +
           '<div class="track"><div class="fill" style="width:' + pct + '%"></div></div>' +
-          '<div class="msg" style="margin-top:8px">' + s.answeredCount + ' of ' + s.players + ' answered' +
-          (s.waitingFor > 0 ? ' · next number in up to ' + s.drawIntervalSeconds + 's' : '') +
+          '<div class="msg" style="margin-top:8px">' + t().answeredOf(s.answeredCount, s.players) +
+          (s.waitingFor > 0 ? t().nextIn(s.drawIntervalSeconds) : '') +
           '</div></div>';
       } else {
-        ask = '<div class="ask"><p>Is ' + s.currentNumber + ' on your ticket?</p><div class="row">' +
-          '<button class="primary" data-ack="yes">Yes, I have it</button>' +
-          '<button class="ghost" data-ack="no">Not on my ticket</button></div></div>';
+        ask = '<div class="ask"><p>' + t().ask(s.currentNumber) + '</p><div class="row">' +
+          '<button class="primary" data-ack="yes">' + t().yes + '</button>' +
+          '<button class="ghost" data-ack="no">' + t().no + '</button></div></div>';
       }
     }
 
-    var meta = '<div class="meta"><span>' + s.markedCount + ' of ' + s.myNumbers.length + ' marked</span>' +
+    var meta = '<div class="meta"><span>' + t().marked(s.markedCount, s.myNumbers.length) + '</span>' +
       '<span>' + esc(s.playerName) + '</span></div>';
 
     app.innerHTML = head + call + ticketHtml(s) + meta + ask + '</div>' +
       '<div class="sidebyside">' + prizesHtml(s) + calledHtml(s) + '</div>' +
       '<div class="card"><div class="ask"><div class="row">' +
-      '<button class="danger" data-exit="1">Exit this game</button></div></div></div>';
+      '<button class="danger" data-exit="1">' + t().exit + '</button></div></div></div>';
 
     maybeSuggestRotate(s);
   }
@@ -466,18 +595,19 @@ export function renderBoardPage(token: string): string {
   document.addEventListener('click', function (e) {
     var t = e.target.closest ? e.target.closest('button') : null;
     if (!t) return;
-    if (t.dataset.dismissRotate) { dismissRotate(); }
+    if (t.dataset.lang) { setLang(t.dataset.lang); }
+    else if (t.dataset.dismissRotate) { dismissRotate(); }
     else if (t.dataset.start) { t.disabled = true; post('/start', {}); }
     else if (t.dataset.invite) {
-      var msg = 'Join my ' + state.brand + ' Tambola game! Tap: ' + state.inviteUrl;
+      var msg = t().inviteMsg(state.brand, state.inviteUrl);
       if (navigator.share) { navigator.share({ text: msg }).catch(function () {}); }
-      else if (navigator.clipboard) { navigator.clipboard.writeText(msg); toast('Invite copied — paste it to your friends'); }
+      else if (navigator.clipboard) { navigator.clipboard.writeText(msg); toast(t().inviteCopied); }
       else { window.open(state.inviteUrl, '_blank'); }
     }
     else if (t.dataset.ack) { t.disabled = true; post('/ack', { hasNumber: t.dataset.ack === 'yes' }); }
     else if (t.dataset.claim) { t.disabled = true; post('/claim', { claimType: t.dataset.claim }); }
     else if (t.dataset.exit) {
-      if (confirm('Leave this game? You will stop receiving numbers and cannot rejoin this round.')) {
+      if (confirm(t().exitConfirm)) {
         post('/exit', {});
       }
     }
@@ -493,6 +623,9 @@ export function renderBoardPage(token: string): string {
     clearInterval(timer);
     timer = setInterval(refresh, pollMs);
   }
+
+  document.documentElement.setAttribute('lang', L);
+  offlineEl.textContent = t().reconnecting;
 
   refresh();
   timer = setInterval(refresh, pollMs);

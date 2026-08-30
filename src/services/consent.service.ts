@@ -16,13 +16,24 @@ export interface LegalDocument {
   title: string;
   summary: string;
   body: string;
+  /**
+   * Hindi, when it has been written. Null is normal and not a fault: the
+   * English is the fallback, so a policy change can go live immediately and be
+   * translated afterwards rather than the page breaking in the meantime.
+   *
+   * English remains the legally operative text, and the page says so.
+   */
+  title_hi: string | null;
+  summary_hi: string | null;
+  body_hi: string | null;
   version: number;
   display_order: number;
   requires_consent: boolean;
   is_active: boolean;
 }
 
-const DOC_COLUMNS = `id, doc_key, title, summary, body, version, display_order,
+const DOC_COLUMNS = `id, doc_key, title, summary, body,
+  title_hi, summary_hi, body_hi, version, display_order,
   requires_consent, is_active`;
 
 export async function listActiveDocuments(client?: Queryable): Promise<LegalDocument[]> {

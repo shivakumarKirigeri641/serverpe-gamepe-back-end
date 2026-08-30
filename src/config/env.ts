@@ -35,7 +35,14 @@ const schema = z.object({
   WHATSAPP_FLOW_ID: z.string().default(''),
 
   MONETIZATION_ENABLED: bool,
-  FREE_TRIAL_ENDS_AT: z.string().default('2026-09-14T23:59:59+05:30'),
+  /**
+   * When the free trial closes.
+   *
+   * Short first window on purpose: its job is to measure how many people turn
+   * up, and a shorter one answers that sooner. Extend it once the signup count
+   * says whether it is worth extending — see /admin/trial.
+   */
+  FREE_TRIAL_ENDS_AT: z.string().default('2026-09-06T23:59:59+05:30'),
   DEFAULT_ENTRY_FEE_PAISE: z.coerce.number().int().min(0).default(0),
 
   /** Game offered when a player just says "play". Must be a registered engine key. */
@@ -154,6 +161,32 @@ const schema = z.object({
   EARLY_ADVANCE_DELAY_MS: z.coerce.number().int().min(0).max(5000).default(300),
 
   DRAW_INTERVAL_SECONDS: z.coerce.number().int().min(1).max(120).default(20),
+
+  /* ------------------------------------------------------- email alerts */
+
+  MAIL_HOST: z.string().default(''),
+  MAIL_PORT: z.coerce.number().int().min(1).max(65535).default(465),
+  MAIL_SECURE: bool,
+  MAIL_FROM_NAME: z.string().default('MastiPe'),
+
+  /**
+   * Alerts are sent from the no-reply mailbox, never from the admin one.
+   *
+   * A reply to an automated alert should go nowhere rather than into the
+   * mailbox support tickets arrive in, and the admin credentials should not be
+   * the ones sitting in an SMTP session on every game that ends.
+   */
+  NOREPLYMAIL: z.string().default(''),
+  NOREPLYMAIL_PASSWORD: z.string().default(''),
+
+  ADMINMAIL: z.string().default(''),
+  ADMINMAIL_PASSWORD: z.string().default(''),
+  ALERT_RECIPIENT: z.string().default(''),
+
+  ADMIN_NOTIFICATIONS_ENABLED: bool,
+
+  /** How often batched alerts are collected and sent as one email. */
+  ALERT_DIGEST_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -171,7 +204,7 @@ export const env = parsed.data;
  * schema can carry real prices before we are ready to collect them.
  */
 /**
- * "14 September" — the trial end date as players see it.
+ * "6 September" — the trial end date as players see it.
  *
  * Derived from FREE_TRIAL_ENDS_AT so the date lives in one place; hard-coding
  * it into greetings is how copy and behaviour drift apart.

@@ -34,6 +34,7 @@ import { runWithContext } from '../utils/context.js';
 import { isBoardActive } from './presence.service.js';
 import { sendPromo } from './conversation.service.js';
 import { buildPlayerReport } from './report.service.js';
+import { buildHostReport } from './host-report.service.js';
 import { findPlayerById } from './player.service.js';
 
 /** Encodes the game and draw a Flow reply belongs to. */
@@ -434,6 +435,18 @@ export async function concludeGame(gameId: string): Promise<void> {
       logger.error({ err, waId: member.wa_id }, 'failed to deliver game summary');
     }
   }
+
+  // The report goes to everybody who played, winner or not — the loser's copy
+  // is the one that says who won. Sent after the summary so the short message
+  // lands first and the PDF arrives under it, and sequentially rather than in
+  // parallel so a room of thirty does not open thirty uploads at once.
+  for (const member of members) {
+    await sendGameReport(member.player_id, member.wa_id, gameId);
+  }
+
+  // The host gets one more, about the room rather than their ticket.
+  const host = members.find((m) => m.player_id === game.host_player_id);
+  if (host) await sendHostReport(host.player_id, host.wa_id, gameId);
 }
 
 /**
@@ -458,5 +471,33 @@ async function sendGameReport(playerId: string, waId: string, gameId: string): P
   } catch (err) {
     // A report is a nice-to-have; never let it break the end of a game.
     logger.warn({ err, playerId }, 'could not send end-of-game report');
+  }
+}
+
+/**
+ * Sends the host their report on the room.
+ *
+ * A second document, not a replacement: the host played too, so they get the
+ * player report like everybody else, and this one on top. They are two
+ * different questions — "how did I do" and "how did my room do" — and answering
+ * both in one PDF buried the second half under the first.
+ */
+async function sendHostReport(hostPlayerId: string, waId: string, gameId: string): Promise<void> {
+  try {
+    const report = await buildHostReport(hostPlayerId, waId, gameId);
+    if (!report) return;
+
+    const mediaId = await uploadMedia(report.buffer, 'application/pdf', report.filename);
+    if (!mediaId) return;
+
+    await sendDocument(
+      waId,
+      mediaId,
+      report.filename,
+      'Your host report: who joined, who stayed, and how the room went.',
+      { playerId: hostPlayerId, gameId },
+    );
+  } catch (err) {
+    logger.warn({ err, hostPlayerId, gameId }, 'could not send host report');
   }
 }

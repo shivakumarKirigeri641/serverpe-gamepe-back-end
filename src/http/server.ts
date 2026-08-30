@@ -12,6 +12,7 @@ import { createBoardRouter } from './board.routes.js';
 import { renderPoliciesPage } from './policies-page.js';
 import { listActiveDocuments } from '../services/consent.service.js';
 import { getPublicBusinessProfile } from '../services/business.service.js';
+import { apiImagePath, getBrandManifest, imagesDir } from '../services/brand.service.js';
 import { formatListPrice, formatPrice, listActivePlans } from '../services/plan.service.js';
 
 import { verifyChallenge, verifySignature } from '../whatsapp/verify.js';
@@ -139,13 +140,58 @@ export function createServer(): Express {
   // The board is a real web page opened in a browser, so it must be framed by
   // nobody but must still be reachable cross-origin from WhatsApp's launcher.
   // Public: the full policies, readable in a browser rather than chat bubbles.
-  app.get(apiPath('/public/policies'), async (_req: Request, res: Response) => {
+  app.get(apiPath('/public/policies'), async (req: Request, res: Response) => {
     try {
+      // Hindi on request only. Anything other than 'hi' is English rather than
+      // an error: a mistyped or stale link should still show the policies.
+      const lang = req.query['lang'] === 'hi' ? 'hi' : 'en';
       const docs = await listActiveDocuments();
-      res.type('html').set('Cache-Control', 'public, max-age=300').send(renderPoliciesPage(docs));
+      res
+        .type('html')
+        .set('Cache-Control', 'public, max-age=300')
+        .set('Vary', 'Accept-Language')
+        .send(renderPoliciesPage(docs, lang));
     } catch (err) {
       logger.error({ err }, 'failed to render policies page');
       res.status(500).type('html').send('<h1>Could not load the policies.</h1>');
+    }
+  });
+
+  /**
+   * Public: the brand assets.
+   *
+   * Served rather than bundled into each front-end, so the mark is replaced in
+   * one place. Cached hard because the files are immutable in practice — a new
+   * logo is a new filename, not new bytes behind an old one.
+   */
+  app.use(
+    apiImagePath(),
+    // Cross-origin on purpose: the marketing site, the admin panel and an
+    // Open Graph crawler all fetch these from a different origin, and the
+    // same-origin default set above would block every one of them.
+    (_req: Request, res: Response, next) => {
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      next();
+    },
+    express.static(imagesDir(), {
+      immutable: true,
+      maxAge: '30d',
+      fallthrough: false,
+      index: false,
+      dotfiles: 'ignore',
+    }),
+  );
+
+  app.get(apiPath('/public/brand'), async (_req: Request, res: Response) => {
+    try {
+      res
+        .set('Cache-Control', 'public, max-age=600')
+        .set('Access-Control-Allow-Origin', '*')
+        .json({ data: await getBrandManifest() });
+    } catch (err) {
+      logger.error({ err }, 'failed to build brand manifest');
+      res.status(500).json({ error: 'Could not read the brand assets' });
     }
   });
 

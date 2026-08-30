@@ -36,6 +36,7 @@ import { playersByRegion } from '../services/geo.service.js';
 import { lookupNumber, searchNumbers } from '../services/lookup.service.js';
 import { previewPurge, purgeData } from '../services/purge.service.js';
 import { documentStats, listDocuments, readDocument } from '../services/document.service.js';
+import { getTrialSummary } from '../services/trial.service.js';
 import {
   blockHistory,
   blockNumber,
@@ -847,6 +848,13 @@ export function createAdminRouter(): Router {
       );
       return unblockNumber(waId, reason, req.adminActor ?? 'admin');
     }),
+  );
+
+  /* ------------------------------------------------------------ trial */
+
+  router.get(
+    '/trial',
+    handle(async () => getTrialSummary()),
   );
 
   /* -------------------------------------------------------- documents */

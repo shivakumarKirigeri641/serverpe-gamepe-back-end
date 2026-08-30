@@ -1,4 +1,4 @@
-import { env } from '../config/env.js';
+import { apiPath, env } from '../config/env.js';
 import type { LegalDocument } from '../services/consent.service.js';
 import { whatsappReturnUrl } from './board-token.js';
 
@@ -51,27 +51,80 @@ function inline(text: string): string {
     .replace(/_([^_\n]+)_/g, '<em>$1</em>');
 }
 
-export function renderPoliciesPage(docs: LegalDocument[]): string {
-  const toc = docs
-    .map((d) => `<a href="#${escapeHtml(d.doc_key)}">${escapeHtml(d.title)}</a>`)
-    .join('');
+export type PolicyLang = 'en' | 'hi';
 
-  const sections = docs
+/**
+ * Page furniture in both languages.
+ *
+ * The email address, the brand and the company name stay in Latin script in
+ * both: they are strings a reader has to recognise or type exactly, and
+ * transliterating them would make them wrong.
+ */
+const UI = {
+  en: {
+    htmlLang: 'en',
+    title: 'Policies & Terms',
+    intro: 'Please read these before you play. Operated by ServerPe App Solutions.',
+    version: 'version',
+    cta: 'Back to WhatsApp to accept',
+    questions: 'Questions?',
+    switch: 'हिंदी में पढ़ें',
+    entertainment: 'For Entertainment Only · No betting · No money',
+    legalNote: '',
+  },
+  hi: {
+    htmlLang: 'hi',
+    title: 'नीतियाँ और शर्तें',
+    intro: 'खेलने से पहले कृपया इन्हें पढ़ें। संचालक: ServerPe App Solutions।',
+    version: 'संस्करण',
+    cta: 'स्वीकार करने के लिए WhatsApp पर लौटें',
+    questions: 'प्रश्न?',
+    switch: 'Read in English',
+    entertainment: 'केवल मनोरंजन के लिए · कोई सट्टा नहीं · कोई पैसा नहीं',
+    // Stated to the reader, not just in a migration comment: a translation is a
+    // convenience, and if the two ever disagree the English is what binds.
+    legalNote:
+      'यह हिंदी अनुवाद आपकी सुविधा के लिए है। किसी भी अंतर की स्थिति में अंग्रेज़ी पाठ ही कानूनी रूप से मान्य होगा।',
+  },
+} as const;
+
+export function renderPoliciesPage(docs: LegalDocument[], lang: PolicyLang = 'en'): string {
+  const t = UI[lang];
+
+  // Per field, not per document: a half-translated document shows its Hindi
+  // title with an English clause rather than falling back wholesale.
+  const pick = (hi: string | null, en: string): string => (lang === 'hi' && hi ? hi : en);
+
+  const toc = docs
     .map(
-      (d) => `<section id="${escapeHtml(d.doc_key)}">
-        <h2>${escapeHtml(d.title)}</h2>
-        <p class="sub">${escapeHtml(d.summary)} · version ${d.version}</p>
-        ${toHtml(d.body)}
-      </section>`,
+      (d) =>
+        `<a href="#${escapeHtml(d.doc_key)}">${escapeHtml(pick(d.title_hi, d.title))}</a>`,
     )
     .join('');
 
+  const sections = docs
+    .map((d) => {
+      const untranslated = lang === 'hi' && !d.body_hi;
+      return `<section id="${escapeHtml(d.doc_key)}">
+        <h2>${escapeHtml(pick(d.title_hi, d.title))}</h2>
+        <p class="sub">${escapeHtml(pick(d.summary_hi, d.summary))} · ${t.version} ${d.version}</p>
+        ${untranslated ? '<p class="note">इस दस्तावेज़ का हिंदी अनुवाद अभी उपलब्ध नहीं है। नीचे अंग्रेज़ी पाठ है।</p>' : ''}
+        ${toHtml(pick(d.body_hi, d.body))}
+      </section>`;
+    })
+    .join('');
+
+  const other = lang === 'hi' ? 'en' : 'hi';
+
   return `<!doctype html>
-<html lang="en">
+<html lang="${t.htmlLang}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>${escapeHtml(env.BRAND_NAME)} — Policies &amp; Terms</title>
+<link rel="icon" type="image/png" sizes="32x32" href="${apiPath('/public/brand/images/favicon-32.png')}">
+<link rel="apple-touch-icon" sizes="180x180" href="${apiPath('/public/brand/images/apple-touch-icon-180.png')}">
+<meta name="theme-color" content="#7d0f22">
+<title>${escapeHtml(env.BRAND_NAME)} — ${t.title}</title>
 <style>
   :root { --maroon:#7d0f22; --ink:#1e2733; --muted:#6b7684; --line:#e2e7ee; --bg:#f6f3ef; --card:#fff; }
   * { box-sizing: border-box; }
@@ -99,17 +152,30 @@ export function renderPoliciesPage(docs: LegalDocument[]): string {
   .cta { display:block; text-align:center; margin-top:18px; padding:15px; border-radius:12px;
          background:#1f9d55; color:#fff; text-decoration:none; font-weight:700; }
   footer { text-align:center; color:var(--muted); font-size:12px; margin-top:16px; }
+  .lang { display:inline-block; margin-top:12px; background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.35);
+          color:#fff; border-radius:999px; padding:7px 16px; font-size:14px; font-weight:700; text-decoration:none; }
+  .ent { display:block; margin:0 0 14px; text-align:center; color:#b3122b; background:#fff2f2;
+         border:1px solid #f3c9cf; border-radius:10px; padding:9px; font-size:13px; font-weight:700; }
+  .note { background:#fff8e6; border:1px solid #f0d9a0; color:#7a5b00; border-radius:8px;
+          padding:9px 11px; font-size:13.5px; margin:0 0 12px; }
+  /* Devanagari sits taller than Latin; a little more line height keeps the
+     matras from crowding the line above. */
+  html[lang="hi"] body { line-height: 1.75; }
+  html[lang="hi"] section h2 { line-height: 1.4; }
 </style>
 </head>
 <body>
 <header>
-  <h1>${escapeHtml(env.BRAND_NAME)} — Policies &amp; Terms</h1>
-  <p>Please read these before you play. Operated by ServerPe App Solutions.</p>
+  <h1>${escapeHtml(env.BRAND_NAME)} — ${t.title}</h1>
+  <p>${t.intro}</p>
+  <a class="lang" href="?lang=${other}" hreflang="${other}">${UI[lang].switch}</a>
 </header>
+<p class="ent">${t.entertainment}</p>
+${t.legalNote ? `<p class="note">${t.legalNote}</p>` : ''}
 <nav>${toc}</nav>
 ${sections}
-<a class="cta" href="${whatsappReturnUrl()}">Back to WhatsApp to accept</a>
-<footer>Questions? admin@serverpe.in</footer>
+<a class="cta" href="${whatsappReturnUrl()}">${t.cta}</a>
+<footer>${t.questions} support@mastipe.in</footer>
 </body>
 </html>`;
 }

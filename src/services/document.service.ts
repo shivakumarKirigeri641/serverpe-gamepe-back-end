@@ -73,6 +73,15 @@ export async function nextDocumentNumber(
 
 export interface StoreDocumentInput {
   kind: DocumentKind;
+  /**
+   * Identifies the logical document, so a regeneration overwrites its own file
+   * instead of minting a new number.
+   *
+   * Learned the hard way in QuizPe: without it, rebuilding a report leaves
+   * another orphan PDF on disk every time while the row points only at the
+   * newest, and the day's numbering inflates with duplicates of one report.
+   */
+  dedupeKey?: string;
   buffer: Buffer;
   playerId?: string | null;
   gameId?: string | null;
@@ -108,6 +117,39 @@ export async function storeDocument(input: StoreDocumentInput): Promise<StoredDo
   // back rather than burning a number, and a committed row is always a file
   // that exists.
   return withTransaction(async (client) => {
+    // Already numbered? Reuse everything and just rewrite the file.
+    if (input.dedupeKey) {
+      const prior = await queryOne<{
+        id: string; doc_number: string; filename: string; rel_path: string;
+      }>(
+        `SELECT id, doc_number, filename, rel_path FROM documents
+          WHERE kind = $1 AND metadata->>'dedupeKey' = $2
+          ORDER BY created_at DESC LIMIT 1`,
+        [input.kind, input.dedupeKey],
+        client,
+      );
+
+      if (prior) {
+        const absPath = join(UPLOAD_ROOT, prior.rel_path);
+        await mkdir(dirname(absPath), { recursive: true });
+        await writeFile(absPath, input.buffer);
+        await query(
+          `UPDATE documents SET byte_size = $2 WHERE id = $1`,
+          [prior.id, input.buffer.byteLength],
+          client,
+        );
+        logger.info({ docNumber: prior.doc_number, kind: input.kind }, 'document regenerated');
+        return {
+          id: prior.id,
+          docNumber: prior.doc_number,
+          filename: prior.filename,
+          relPath: prior.rel_path,
+          absPath,
+          bytes: input.buffer.byteLength,
+        };
+      }
+    }
+
     const docNumber = await nextDocumentNumber(input.kind, issuedOn, client);
     const filename = `${docNumber}.pdf`;
     const relPath = `${FOLDERS[input.kind]}/${filename}`;
@@ -131,7 +173,7 @@ export async function storeDocument(input: StoreDocumentInput): Promise<StoredDo
         input.gameId ?? null,
         input.waId ?? null,
         input.title ?? null,
-        JSON.stringify(input.metadata ?? {}),
+        JSON.stringify({ ...(input.metadata ?? {}), dedupeKey: input.dedupeKey ?? null }),
         issuedOn,
       ],
       client,
