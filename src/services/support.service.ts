@@ -1,5 +1,6 @@
 import { query, queryOne } from '../db/pool.js';
 import { generateRoomCode } from '../utils/ids.js';
+import { notify } from './notification.service.js';
 
 /** Support tickets raised by players or opened by an admin on their behalf. */
 
@@ -35,6 +36,23 @@ export async function createTicket(input: TicketInput): Promise<Record<string, u
       input.priority ?? null,
     ],
   );
+  // Instant by default: this is the one trigger where a person is actually
+  // waiting for a reply, and a ten-minute batch is ten minutes of silence.
+  void notify({
+    trigger: 'support.ticket',
+    summary: `${reference} — ${input.subject.slice(0, 120)}`,
+    playerId: input.playerId ?? null,
+    gameId: input.gameId ?? null,
+    waId: input.waId ?? null,
+    detail: {
+      reference,
+      subject: input.subject.slice(0, 200),
+      body: input.body.slice(0, 1000),
+      priority: input.priority ?? 'normal',
+      category: input.category ?? null,
+    },
+  });
+
 
   if (ticket) {
     await query(

@@ -8,7 +8,7 @@ import { redis } from './redis/client.js';
 import { startServer } from './http/server.js';
 import { createDrawWorker } from './workers/draw.worker.js';
 import { createMaintenanceWorker } from './workers/maintenance.worker.js';
-import { drawQueue, maintenanceQueue, scheduleMaintenance } from './workers/queue.js';
+import { drawQueue, maintenanceQueue, scheduleDigest, scheduleMaintenance } from './workers/queue.js';
 
 async function main(): Promise<void> {
   registerAllGames();
@@ -26,6 +26,7 @@ async function main(): Promise<void> {
   // on a missing directory.
   await ensureUploadFolders();
   await scheduleMaintenance();
+  await scheduleDigest();
 
   logger.info(
     {

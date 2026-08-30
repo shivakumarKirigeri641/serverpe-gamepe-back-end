@@ -56,6 +56,7 @@ import { boardUrl, inviteUrl, policiesUrl } from '../http/board-token.js';
 import { getStats, getWeeklyLeaderboard, leaderboardName, recordPrizeWon } from './stats.service.js';
 import { buildPlayerReport } from './report.service.js';
 import { getBalance, getFreeGames, walletHistory } from './wallet.service.js';
+import { notify } from './notification.service.js';
 
 /**
  * Which engine `play` starts. Nothing else in this file names a specific game —
@@ -820,6 +821,21 @@ export async function handleStart(player: PlayerRow, gameId: string): Promise<vo
     },
   });
 
+  void notify({
+    trigger: 'game.started',
+    summary: `Room ${game.room_code} started — ${members.length} players, host ${displayNameOf(player)} (+${player.wa_id})`,
+    gameId: game.id,
+    playerId: player.id,
+    waId: player.wa_id,
+    detail: {
+      roomCode: game.room_code,
+      gameKey: game.game_key,
+      players: members.length,
+      expectedPlayers: game.expected_players,
+      plan: game.plan_key,
+    },
+  });
+
   for (const member of members) {
     const url = boardUrl(game.id, member.player_id);
     const ctx = { playerId: member.player_id, gameId: game.id };
@@ -1145,6 +1161,18 @@ export async function handleInbound(event: InboundEvent): Promise<void> {
     gameId: activeGame?.id ?? null,
     properties: { profileName: event.profileName ?? null },
   });
+
+  // Only the first time. A returning player messaging again is not news, and
+  // an alert per "hi" would make the digest unreadable within a week.
+  if (player.is_new) {
+    void notify({
+      trigger: 'player.first_contact',
+      summary: `New: ${displayNameOf(player)} (+${player.wa_id})`,
+      playerId: player.id,
+      waId: player.wa_id,
+      detail: { displayName: player.display_name },
+    });
+  }
 
   if (player.is_blocked) return;
 

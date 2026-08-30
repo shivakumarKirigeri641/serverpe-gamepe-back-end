@@ -40,6 +40,15 @@ import { previewPurge, purgeData } from '../services/purge.service.js';
 import { documentStats, listDocuments, readDocument } from '../services/document.service.js';
 import { getTrialSummary } from '../services/trial.service.js';
 import {
+  gatherDigestStats,
+  listSettings,
+  pendingCount,
+  recentLog,
+  sendDigest,
+  updateSetting,
+} from '../services/notification.service.js';
+import { mailConfigured, verifyMail } from '../services/mailer.service.js';
+import {
   createOrder,
   listPaymentEvents,
   listPayments,
@@ -858,6 +867,78 @@ export function createAdminRouter(): Router {
         (req.body as { reason?: string } | undefined)?.reason ?? 'Unblocked by admin',
       );
       return unblockNumber(waId, reason, req.adminActor ?? 'admin');
+    }),
+  );
+
+  /* ---------------------------------------------------- notifications */
+
+  router.get(
+    '/notifications',
+    handle(async () => {
+      const [settings, log, pending, preview] = await Promise.all([
+        listSettings(),
+        recentLog(30),
+        pendingCount(),
+        gatherDigestStats(env.ALERT_DIGEST_MINUTES),
+      ]);
+      return {
+        status: {
+          enabled: env.ADMIN_NOTIFICATIONS_ENABLED,
+          configured: mailConfigured(),
+          from: env.NOREPLYMAIL,
+          to: env.ALERT_RECIPIENT || env.ADMINMAIL,
+          digestMinutes: env.ALERT_DIGEST_MINUTES,
+        },
+        settings,
+        pending,
+        preview,
+        log,
+      };
+    }),
+  );
+
+  router.patch(
+    '/notifications/:triggerKey',
+    handle(async (req) => {
+      const key = z.string().min(3).max(64).parse(req.params['triggerKey']);
+      const patch = z
+        .object({
+          enabled: z.boolean().optional(),
+          mode: z.enum(['digest', 'instant', 'off']).optional(),
+          recipient: z.string().email().nullable().optional(),
+        })
+        .parse(req.body ?? {});
+
+      await updateSetting(key, patch);
+      return { ok: true };
+    }),
+  );
+
+  /** Proves the SMTP credentials work without sending anything. */
+  router.post(
+    '/notifications/verify',
+    handle(async () => verifyMail()),
+  );
+
+  /**
+   * Sends the digest now.
+   *
+   * `force` sends even when there is nothing queued, which is what makes it a
+   * usable test: the normal path deliberately stays silent on an empty window.
+   */
+  router.post(
+    '/notifications/send',
+    handle(async (req) => {
+      const force = z.boolean().optional().parse((req.body as { force?: boolean } | undefined)?.force);
+      await track({
+        type: EVENT.ADMIN_REQUEST,
+        source: 'admin',
+        adminActor: req.adminActor ?? null,
+        requestIp: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+        properties: { action: 'notifications.send', force: Boolean(force) },
+      });
+      return sendDigest(force ?? true);
     }),
   );
 

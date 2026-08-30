@@ -1,6 +1,7 @@
 import { query, queryOne, withTransaction } from '../db/pool.js';
 import { redis } from '../redis/client.js';
 import { logger } from '../utils/logger.js';
+import { notify } from './notification.service.js';
 import { EVENT, track } from './analytics.service.js';
 
 /**
@@ -133,6 +134,19 @@ export async function blockNumber(input: BlockInput): Promise<Record<string, unk
   });
 
   logger.warn({ waId: input.waId, by: input.performedBy }, 'number blocked');
+
+  void notify({
+    trigger: 'player.blocked',
+    summary: `+${input.waId} blocked by ${input.performedBy} — ${input.reason.slice(0, 120)}`,
+    waId: input.waId,
+    detail: {
+      reason: input.reason.slice(0, 500),
+      category: input.category ?? null,
+      reportedBy: input.reportedBy ?? null,
+      performedBy: input.performedBy,
+    },
+  });
+
   return result;
 }
 

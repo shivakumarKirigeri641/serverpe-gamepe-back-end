@@ -1,4 +1,5 @@
 import { query, queryOne } from '../db/pool.js';
+import { notify } from './notification.service.js';
 
 /** Ratings and comments players leave after a round. */
 
@@ -9,6 +10,14 @@ export async function saveRating(gameId: string, playerId: string, rating: numbe
      ON CONFLICT (game_id, player_id) DO UPDATE SET rating = EXCLUDED.rating, created_at = now()`,
     [gameId, playerId, rating],
   );
+
+  void notify({
+    trigger: 'feedback.received',
+    summary: `Rated ${rating}/5`,
+    gameId,
+    playerId,
+    detail: { rating },
+  });
 }
 
 /** Attaches a comment to the rating the player just gave. */
@@ -19,6 +28,16 @@ export async function saveComment(gameId: string, playerId: string, comment: str
      ON CONFLICT (game_id, player_id) DO UPDATE SET comment = EXCLUDED.comment`,
     [gameId, playerId, comment.slice(0, 2000)],
   );
+
+  // The comment is the part worth reading, so it goes in the summary rather
+  // than being hidden in the detail blob.
+  void notify({
+    trigger: 'feedback.received',
+    summary: `Comment: "${comment.slice(0, 160)}"`,
+    gameId,
+    playerId,
+    detail: { comment: comment.slice(0, 2000) },
+  });
 }
 
 export async function feedbackSummary(): Promise<Record<string, unknown> | null> {

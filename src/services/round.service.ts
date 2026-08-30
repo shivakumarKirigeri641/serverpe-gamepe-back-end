@@ -35,7 +35,9 @@ import { isBoardActive } from './presence.service.js';
 import { sendPromo } from './conversation.service.js';
 import { buildPlayerReport } from './report.service.js';
 import { buildHostReport } from './host-report.service.js';
-import { findPlayerById } from './player.service.js';
+import { notify } from './notification.service.js';
+import { queryOne } from '../db/pool.js';
+import { findPlayerById, publicName } from './player.service.js';
 
 /** Encodes the game and draw a Flow reply belongs to. */
 export function makeFlowToken(gameId: string, seq: number): string {
@@ -424,6 +426,31 @@ export async function concludeGame(gameId: string): Promise<void> {
       prizesAwarded: awarded,
       // Wall-clock length of the round, for the "how long is a game" metric.
       durationMs: game.started_at ? Date.now() - new Date(game.started_at).getTime() : null,
+    },
+  });
+
+  const winner = awarded.includes('full_house')
+    ? (await queryOne<{ display_name: string | null; player_id: string }>(
+        `SELECT c.player_id, p.display_name FROM game_claims c JOIN players p ON p.id = c.player_id
+          WHERE c.game_id = $1 AND c.claim_type = 'full_house' AND c.status = 'awarded' LIMIT 1`,
+        [gameId],
+      ))
+    : null;
+
+  void notify({
+    trigger: 'game.ended',
+    summary:
+      `Room ${game.room_code} finished — ${members.length} players, ${drawn.length} numbers, ` +
+      `${awarded.length} prizes${winner ? `, won by ${publicName(winner.player_id, winner.display_name)}` : ', no full house'}`,
+    gameId,
+    detail: {
+      roomCode: game.room_code,
+      players: members.length,
+      numbersCalled: drawn.length,
+      prizes: awarded,
+      durationMinutes: game.started_at
+        ? Math.round((Date.now() - new Date(game.started_at).getTime()) / 60000)
+        : null,
     },
   });
 

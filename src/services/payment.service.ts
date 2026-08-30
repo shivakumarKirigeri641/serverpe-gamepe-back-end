@@ -3,6 +3,7 @@ import { query, queryOne, withTransaction } from '../db/pool.js';
 import { env } from '../config/env.js';
 import { logger } from '../utils/logger.js';
 import { postLedgerEntry } from './wallet.service.js';
+import { notify } from './notification.service.js';
 
 /**
  * Razorpay payments.
@@ -234,8 +235,9 @@ export async function handleWebhook(
       amount_paise: number;
       status: string;
       credited_at: Date | null;
+      wa_id: string | null;
     }>(
-      `SELECT id, player_id, credits_paise, amount_paise, status, credited_at
+      `SELECT id, player_id, credits_paise, amount_paise, status, credited_at, wa_id
          FROM payments WHERE order_id = $1 FOR UPDATE`,
       [orderId],
       client,
@@ -288,6 +290,13 @@ export async function handleWebhook(
         client,
       );
     }
+
+    void notify({
+      trigger: 'payment.received',
+      summary: `₹${(payment.amount_paise / 100).toFixed(2)} received from +${payment.wa_id ?? '?'}`,
+      playerId: payment.player_id,
+      detail: { orderId, paymentId, amountPaise: payment.amount_paise, creditsPaise: payment.credits_paise },
+    });
 
     return 'credited';
   });

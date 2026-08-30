@@ -67,3 +67,24 @@ export async function scheduleMaintenance(): Promise<void> {
     },
   );
 }
+
+/**
+ * Arms the operator digest.
+ *
+ * Shares the maintenance queue rather than adding a third: both are periodic
+ * housekeeping, and one more queue would mean one more worker, one more
+ * connection and one more thing to notice has stopped.
+ *
+ * The fixed repeat key means restarting re-uses the schedule instead of
+ * stacking a second timer — which would double every alert.
+ */
+export async function scheduleDigest(): Promise<void> {
+  await maintenanceQueue.add(
+    'digest',
+    {},
+    {
+      repeat: { every: env.ALERT_DIGEST_MINUTES * 60_000 },
+      jobId: 'digest:recurring',
+    },
+  );
+}
