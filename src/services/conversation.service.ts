@@ -56,6 +56,7 @@ import { boardUrl, checkoutUrl, inviteUrl, policiesUrl } from '../http/board-tok
 import { getStats, getWeeklyLeaderboard, leaderboardName, recordPrizeWon } from './stats.service.js';
 import { buildPlayerReport } from './report.service.js';
 import { getBalance, getFreeGames, walletHistory } from './wallet.service.js';
+import { saveRating } from './feedback.service.js';
 import { activePass, isChargingLive, priceForPlayers } from './pricing.service.js';
 import { notify } from './notification.service.js';
 
@@ -852,7 +853,10 @@ async function handleJoin(
 
     // Nudge the host to start once the room is full and legal to begin.
     if (full && members.length >= minimumPlayers()) {
-      await sendButtons(hostRow.wa_id, 'Ready to begin?', [
+      await sendButtons(
+        hostRow.wa_id,
+        'Ready to begin?\n\n⚠️ Once the game starts nobody else can join — anyone still on their way will have to wait for the next game.',
+        [
         { id: `start:${result.game.id}`, title: 'Start game' },
         { id: 'cmd:status', title: 'Who has joined' },
       ]);
@@ -1406,14 +1410,26 @@ async function handleAction(player: PlayerRow, actionId: string): Promise<void> 
         await sendText(player.wa_id, 'That game is already over.');
         return;
       }
-      await sendButtons(
-        player.wa_id,
-        `Leave room *${game.room_code}*? You will stop receiving numbers and cannot rejoin this round.`,
-        [
-          { id: `exitconfirm:${game.id}`, title: 'Yes, exit' },
-          { id: 'cmd:entry', title: 'Stay in game' },
-        ],
-      );
+      // The consequence differs by state, and saying the harsher thing in both
+      // cases is not "safe" — it stops people leaving a lobby they could
+      // rejoin in seconds, which is its own kind of trap.
+      const running = game.status === 'running';
+      const warning = running
+        ? `Leave room *${game.room_code}*?
+
+` +
+          `⚠️ The game is already playing, so you *cannot rejoin it* — your ticket ` +
+          `and any prizes you were close to will be lost.`
+        : `Leave room *${game.room_code}*?
+
+` +
+          `It has not started yet, so you can join again with the code while it is ` +
+          `still open — though you would be given a new ticket.`;
+
+      await sendButtons(player.wa_id, warning, [
+        { id: `exitconfirm:${game.id}`, title: running ? 'Yes, leave' : 'Yes, leave' },
+        { id: 'cmd:entry', title: 'Stay in game' },
+      ]);
       return;
     }
 
@@ -1445,6 +1461,24 @@ async function handleAction(player: PlayerRow, actionId: string): Promise<void> 
       }
 
       return handlePlay(player, gameKey, players, plan.plan_key);
+    }
+
+    case 'rate': {
+      const [gameId, score] = rest;
+      const rating = Number(score);
+      if (!gameId || !Number.isFinite(rating)) return;
+
+      await saveRating(gameId, player.id, rating);
+      await sendText(
+        player.wa_id,
+        rating >= 4
+          ? 'Thank you! Glad you enjoyed it. 🎉'
+          : rating >= 3
+            ? 'Thank you. Tell us what would make it better — just reply here.'
+            : `Sorry it fell short. Reply here and tell us what went wrong, or write to ${env.SUPPORT_EMAIL}.`,
+        { playerId: player.id, gameId },
+      );
+      return;
     }
 
     case 'legal':

@@ -27,6 +27,7 @@ const DIR = join(process.cwd(), 'src', 'assets', 'fonts');
 
 const FACES = {
   latin: 'DejaVuSans',
+  kannada: 'NotoSansKannada',
   devanagari: 'NotoSansDevanagari',
 } as const;
 
@@ -80,7 +81,37 @@ export function useFonts(doc: PDFKit.PDFDocument, script: Script = 'latin'): Fon
   // text a missing face would cause.
   doc.registerFont('bodyOblique', existsSync(oblique) ? oblique : regular);
 
+  // Every other available script is registered alongside, so a single name in
+  // Kannada or Devanagari can be drawn with the right face without swapping the
+  // document's body font. Player names arrive in whatever script the person set
+  // on WhatsApp, and one of them being unreadable should not cost the rest of
+  // the report its typography.
+  for (const other of availableScripts()) {
+    if (other === script) continue;
+    const base = FACES[other];
+    const reg = join(DIR, `${base}-Regular.ttf`);
+    const bld = join(DIR, `${base}-Bold.ttf`);
+    if (!existsSync(reg)) continue;
+    doc.registerFont(other, reg);
+    doc.registerFont(`${other}Bold`, existsSync(bld) ? bld : reg);
+  }
+
   return { regular: 'body', bold: 'bodyBold', oblique: 'bodyOblique', unicode: true };
+}
+
+/**
+ * Which face a piece of text needs.
+ *
+ * Player names arrive in whatever script the person set on WhatsApp — a real
+ * game already produced "ಗಂಗಾಧರ", which DejaVu cannot draw at all, so the name
+ * silently vanished from their report. Detected from the text rather than from
+ * a profile setting, because nobody tells us their script and the name itself
+ * is the only evidence.
+ */
+export function scriptFor(text: string): Script {
+  if (/[ಀ-೿]/.test(text)) return 'kannada';
+  if (/[ऀ-ॿ]/.test(text)) return 'devanagari';
+  return 'latin';
 }
 
 /** Which scripts can actually be typeset on this machine right now. */
@@ -88,4 +119,18 @@ export function availableScripts(): Script[] {
   return (Object.keys(FACES) as Script[]).filter((s) =>
     existsSync(join(DIR, `${FACES[s]}-Regular.ttf`)),
   );
+}
+
+/**
+ * The registered font name to draw this text with.
+ *
+ * Latin text keeps the body face; anything else gets the face that can actually
+ * render it. Called per string rather than per document because one player in a
+ * room of ten may be the only one whose name is not Latin.
+ */
+export function fontForText(text: string, fonts: FontSet, bold = false): string {
+  const script = scriptFor(text);
+  if (script === 'latin') return bold ? fonts.bold : fonts.regular;
+  if (!availableScripts().includes(script)) return bold ? fonts.bold : fonts.regular;
+  return bold ? `${script}Bold` : script;
 }

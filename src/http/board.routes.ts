@@ -135,7 +135,17 @@ export function createBoardRouter(): Router {
     const payload = resolve(req, res);
     if (!payload) return;
 
-    if (!(await withinRateLimit(String(req.params['token']), 'state', 60, 60))) {
+    // 200/min, against a board that polls at most 100/min.
+    //
+    // The old limit was 60/min while the page polls every 600ms once everyone
+    // has answered — 100/min. Every game therefore hit 429 within half a minute
+    // of the first fast round, and the board showed "Reconnecting…" as though
+    // the network had failed. A limit below the client's own designed poll rate
+    // is not a limit, it is a bug with a status code.
+    //
+    // Headroom is for a second tab and for retries, not for a script: this is a
+    // single SELECT, and anything genuinely abusive is far above 200.
+    if (!(await withinRateLimit(String(req.params['token']), 'state', 200, 60))) {
       res.status(429).json({ error: 'Too many requests' });
       return;
     }
@@ -295,11 +305,35 @@ async function buildState(gameId: string, playerId: string): Promise<Record<stri
   const winnerBy = new Map(winners.map((w) => [w.claim_type, publicName(w.player_id, w.display_name)]));
 
   const enabled = (game.config as { enabledClaims?: string[] }).enabledClaims;
+  // Which prizes this player could claim right now.
+  //
+  // The server already validates every claim, so it knows this for free — it
+  // simply never said. Across two test games, four players sat on a claimable
+  // Early Five and none of them noticed, because six identical Claim buttons
+  // give no signal about which one is worth pressing. Telling the board turns
+  // the prize list from decoration into the point of the game.
+  const claimableFor = (key: string): boolean => {
+    if (winnerBy.has(key)) return false;
+    return entries.some(
+      (e) =>
+        engine.validateClaim(
+          { entryNo: e.entry_no, payload: e.payload as never },
+          key,
+          { drawn, alreadyAwarded: awarded },
+        ).ok,
+    );
+  };
+
   const prizes = engine
     .claims()
     .filter((c) => (enabled ? enabled.includes(c.key) : true))
     .sort((a, b) => a.order - b.order)
-    .map((c) => ({ key: c.key, label: c.label, wonBy: winnerBy.get(c.key) ?? null }));
+    .map((c) => ({
+      key: c.key,
+      label: c.label,
+      wonBy: winnerBy.get(c.key) ?? null,
+      claimable: claimableFor(c.key),
+    }));
 
   const myWins = winners.filter((w) => winnerBy.get(w.claim_type) === displayNameOf(player));
 

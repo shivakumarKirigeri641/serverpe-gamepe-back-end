@@ -463,6 +463,30 @@ export async function concludeGame(gameId: string): Promise<void> {
     }
   }
 
+  // One question, asked once, while the game is still fresh.
+  //
+  // Asked here rather than in a follow-up campaign because this is the only
+  // moment a player is certain to be looking at the chat, and a rating loses
+  // its meaning an hour later. Three taps, no typing — anyone who wants to say
+  // more can, but nobody has to.
+  for (const member of members) {
+    try {
+      await runWithContext({ playerId: member.player_id, gameId }, () =>
+        sendButtons(
+          member.wa_id,
+          'How was that game?',
+          [
+            { id: `rate:${gameId}:5`, title: '😀 Great' },
+            { id: `rate:${gameId}:3`, title: '🙂 Fine' },
+            { id: `rate:${gameId}:1`, title: '😕 Not good' },
+          ],
+        ),
+      );
+    } catch (err) {
+      logger.debug({ err, waId: member.wa_id }, 'could not ask for feedback');
+    }
+  }
+
   // The report goes to everybody who played, winner or not — the loser's copy
   // is the one that says who won. Sent after the summary so the short message
   // lands first and the PDF arrives under it, and sequentially rather than in

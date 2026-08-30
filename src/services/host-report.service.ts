@@ -4,7 +4,7 @@ import { env } from '../config/env.js';
 import { appTimeString } from '../utils/time.js';
 import { publicName } from './player.service.js';
 import { storeDocument } from './document.service.js';
-import { useFonts } from './report-fonts.js';
+import { fontForText, useFonts } from './report-fonts.js';
 
 /**
  * The host's report on a room they ran.
@@ -224,7 +224,8 @@ export async function buildHostReport(
     const name = publicName(p.player_id, p.display_name) + (p.player_id === hostPlayerId ? ' (you)' : '');
     const speed = p.median_ms === null ? '—' : `${(Number(p.median_ms) / 1000).toFixed(1)}s`;
 
-    doc.fontSize(9.5).font(fonts.regular).fillColor(COLOR.ink).text(name, 40, y, { width: 205 });
+    // The name may be in any script; the rest of the row is not.
+    doc.fontSize(9.5).font(fontForText(name, fonts)).fillColor(COLOR.ink).text(name, 40, y, { width: 205 });
     doc.fillColor(COLOR.muted)
       .text(`${p.answered} of ${game.numbers}`, 250, y)
       .text(speed, 340, y);
@@ -245,8 +246,9 @@ export async function buildHostReport(
       if (y > 750) { doc.addPage(); y = 50; }
       doc.fontSize(10).font(fonts.regular).fillColor(COLOR.ink)
         .text(PRIZE_LABELS[c.claim_type] ?? c.claim_type, 40, y, { width: 300 });
-      doc.font(fonts.bold).fillColor(COLOR.green)
-        .text(publicName(c.player_id, c.display_name), 340, y, { width: 215, align: 'right' });
+      const winner = publicName(c.player_id, c.display_name);
+      doc.font(fontForText(winner, fonts, true)).fillColor(COLOR.green)
+        .text(winner, 340, y, { width: 215, align: 'right' });
       y += 16;
     }
   }

@@ -34,6 +34,13 @@ const KEEP = [
   // failure is invisible, because an alert that is not configured looks exactly
   // like a quiet week.
   'notification_settings',
+  // Who did what in the admin panel, including running this purge.
+  //
+  // An audit trail that the audited action erases is not an audit trail. It
+  // holds no player content — only an actor, a path and a timestamp — so there
+  // is nothing here that "clean up the test data" is meant to remove, and
+  // every reason to keep the one record showing the data was removed at all.
+  'admin_audit_log',
 ] as const;
 
 export interface PurgePreview {

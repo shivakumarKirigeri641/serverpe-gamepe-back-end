@@ -174,6 +174,64 @@ export function renderBoardPage(token: string): string {
               border-radius: 7px; background: #eef1f5; color: var(--muted); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .called b.mine { background: var(--green); color: #fff; }
 
+  /* ------------------------------------------------------- claimable ---
+     Six identical Claim buttons told a player nothing about which was worth
+     pressing, and four players across two games sat on a winnable prize
+     without noticing. A prize that is ready now looks different from one that
+     is not, and says so in words as well as colour. */
+  ul.prizes li.ready { background: #fffaf0; border-radius: 10px; }
+  ul.prizes li.ready .name { color: #7a5b00; font-weight: 800; }
+  ul.prizes button.ready {
+    background: var(--gold); border-color: var(--gold); color: #3a2a00;
+    font-weight: 800; animation: nudge 1.6s ease-in-out infinite;
+  }
+  @keyframes nudge {
+    0%, 70%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(240,162,2,.55); }
+    35%           { transform: scale(1.06); box-shadow: 0 0 0 7px rgba(240,162,2,0); }
+  }
+  .readytag { display: inline-block; margin-left: 6px; background: var(--gold); color: #3a2a00;
+              font-size: 10px; font-weight: 800; padding: 1px 6px; border-radius: 999px;
+              text-transform: uppercase; letter-spacing: .04em; }
+
+  /* The banner under the called number. Impossible to scroll past. */
+  .claimnow { margin: 0 12px 10px; padding: 11px 13px; border-radius: 12px;
+              background: linear-gradient(135deg, #fff3d6, #ffe6a8); border: 1px solid #f0d9a0;
+              color: #6b4e00; font-weight: 700; font-size: 14.5px; text-align: center;
+              animation: pulsebg 1.8s ease-in-out infinite; }
+  @keyframes pulsebg { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.07); } }
+
+  /* --------------------------------------------------------- celebrate ---
+     Somebody winning is the loudest moment in a game of housie. On a phone,
+     alone in a room, nothing happened at all. */
+  .cheer { position: fixed; inset: 0; z-index: 60; display: none; pointer-events: none;
+           align-items: center; justify-content: center; }
+  .cheer.show { display: flex; animation: cheerfade 2.6s ease-out forwards; }
+  .cheer .box { background: rgba(255,255,255,.97); border-radius: 20px; padding: 22px 26px;
+                text-align: center; box-shadow: 0 10px 40px rgba(20,25,35,.28); max-width: 84vw; }
+  .cheer .emoji { font-size: 52px; animation: pop2 .5s ease; }
+  .cheer .who { font-size: 17px; font-weight: 800; color: var(--maroon); margin-top: 6px; }
+  .cheer .what { font-size: 14px; color: var(--muted); margin-top: 2px; }
+  @keyframes pop2 { 0% { transform: scale(.4); } 60% { transform: scale(1.18); } 100% { transform: scale(1); } }
+  @keyframes cheerfade { 0%,80% { opacity: 1; } 100% { opacity: 0; } }
+
+  /* Falling confetti, CSS only — no library for a two-second effect. */
+  .confetti { position: fixed; top: -12px; width: 9px; height: 14px; z-index: 59;
+              opacity: .95; animation: fall linear forwards; }
+  @keyframes fall { to { transform: translateY(105vh) rotate(720deg); opacity: 0; } }
+
+  /* ------------------------------------------------------ big lobbies ---
+     Thirty name pills pushed Start off the screen. The count is the thing a
+     host is watching; the names are reassurance and can be folded away. */
+  .lobby .names.many span { font-size: 12px; padding: 4px 9px; }
+  /* Said before the tap, not after: joining closes the moment a game starts,
+     and a host who did not know that has locked out a friend who was thirty
+     seconds away. */
+  .lockwarn { margin: 14px 0 0; padding: 10px 12px; border-radius: 10px;
+              background: #fff8e6; border: 1px solid #f0d9a0; color: #7a5b00;
+              font-size: 13px; line-height: 1.5; text-align: left; }
+  .lobby .more { display: block; margin: 6px auto 0; background: none; border: 0;
+                 color: var(--maroon); font-weight: 700; font-size: 13px; text-decoration: underline; }
+
   .toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
            background: var(--ink); color: #fff; padding: 11px 18px; border-radius: 999px;
            font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .25s; max-width: 90vw; text-align: center; }
@@ -181,6 +239,10 @@ export function renderBoardPage(token: string): string {
 
   .over { text-align: center; padding: 26px 20px 22px; }
   .over .big { font-size: 40px; }
+  .over.iwon { background: linear-gradient(160deg, #fff9e8, #fff); }
+  .over .sub { color: var(--muted); font-size: 14px; margin: 2px 0 0; }
+  .over .prizelist { background: var(--panel); border-radius: 10px; padding: 10px 12px;
+                     font-size: 13.5px; line-height: 1.7; }
   .over h1 { font-size: 22px; margin: 10px 0 4px; }
   .over p { color: var(--muted); margin: 6px 0 0; }
   .over .cta { display: block; margin-top: 18px; padding: 14px; border-radius: 12px; background: var(--green);
@@ -280,6 +342,7 @@ export function renderBoardPage(token: string): string {
 </div>
 <div id="app"><div class="card"><div class="call"><div class="nick">Loading your ticket…</div></div></div></div>
 <div class="toast" id="toast"></div>
+<div class="cheer" id="cheer"></div>
 
 <script>
 (function () {
@@ -316,20 +379,35 @@ export function renderBoardPage(token: string): string {
       answeredOf: function (a, b) { return a + ' of ' + b + ' answered'; },
       nextIn: function (s) { return ' · next number in up to ' + s + 's'; },
       marked: function (a, b) { return a + ' of ' + b + ' marked'; },
-      prizes: 'Prizes', claim: 'Claim',
+      prizes: 'Prizes', claim: 'Claim', claimNow: 'Claim now', ready: 'Ready',
+      canClaim: function (names) {
+        return names.length === 1
+          ? '\u{1F389} You can claim ' + names[0] + ' — tap Claim below!'
+          : '\u{1F389} You can claim ' + names.join(' and ') + ' — tap Claim below!';
+      },
+      youWon: function (label) { return 'You won ' + label + '!'; },
+      wonPrize: function (label) { return 'wins ' + label; },
       calledSoFar: function (n) { return 'Called so far (' + n + ')'; },
       exit: 'Exit this game',
-      exitConfirm: 'Leave this game? You will stop receiving numbers and cannot rejoin this round.',
+      exitConfirmRunning: 'Leave this game?\\n\\nThe game is already playing, so you CANNOT rejoin it. Your ticket and any prizes you were close to will be lost.',
+      exitConfirmLobby: 'Leave this room?\\n\\nIt has not started yet, so you can join again with the room code while it is still open — you would get a new ticket.',
       waitingToStart: 'Waiting to start',
       joined: function (n) { return 'player' + (n === 1 ? '' : 's') + ' joined'; },
       minToStart: function (n) { return 'Minimum ' + n + ' to start'; },
       start: 'Start game',
+      startWarning: '⚠️ Once the game starts, nobody else can join — anyone still on their way will have to wait for the next game.',
       needMore: function (n) { return 'Need ' + n + ' more'; },
       hostStarts: 'The host has to start the game.',
       hostStartsSub: 'Hang on a few seconds — this page starts by itself.',
       invite: 'Invite friends', leave: 'Leave',
+      showAll: function (n) { return 'Show ' + n + ' more'; },
+      showFewer: 'Show fewer',
+      wrongAnswer: 'That number IS on your ticket — it has been marked for you.',
       selfUpdates: 'This page updates by itself as friends join.',
-      won: 'Congratulations!', thanks: 'Thanks for playing!',
+      won: 'You won the game!', wonSub: 'Full House — the whole ticket. Well played.',
+      thanks: 'Thanks for playing!',
+      winnerSub: 'won the game with a Full House',
+      thanksSub: 'A good game. Ask the host to start another.',
       over: function (room, n) { return 'Room ' + room + ' · ' + n + ' numbers called'; },
       noPrizes: 'No prizes were claimed.',
       backToWa: 'Back to WhatsApp — tell us how it went',
@@ -353,20 +431,33 @@ export function renderBoardPage(token: string): string {
       answeredOf: function (a, b) { return b + ' में से ' + a + ' ने उत्तर दिया'; },
       nextIn: function (s) { return ' · अगला नंबर ' + s + ' सेकंड में'; },
       marked: function (a, b) { return b + ' में से ' + a + ' कट गए'; },
-      prizes: 'इनाम', claim: 'दावा करें',
+      prizes: 'इनाम', claim: 'दावा करें', claimNow: 'अभी दावा करें', ready: 'तैयार',
+      canClaim: function (names) {
+        return '\u{1F389} आप ' + names.join(' और ') + ' का दावा कर सकते हैं — नीचे टैप करें!';
+      },
+      youWon: function (label) { return 'आपने ' + label + ' जीता!'; },
+      wonPrize: function (label) { return label + ' जीता'; },
       calledSoFar: function (n) { return 'अब तक बोले गए (' + n + ')'; },
       exit: 'इस गेम से बाहर निकलें',
-      exitConfirm: 'इस गेम से बाहर निकलें? आपको और नंबर नहीं मिलेंगे और आप इस राउंड में दोबारा शामिल नहीं हो सकते।',
+      exitConfirmRunning: 'इस गेम से बाहर निकलें?\\n\\nगेम शुरू हो चुका है, इसलिए आप दोबारा शामिल नहीं हो सकते। आपका टिकट और जीतने का मौका खत्म हो जाएगा।',
+      exitConfirmLobby: 'इस रूम से बाहर निकलें?\\n\\nगेम अभी शुरू नहीं हुआ है, इसलिए रूम कोड से दोबारा शामिल हो सकते हैं — आपको नया टिकट मिलेगा।',
       waitingToStart: 'शुरू होने का इंतज़ार',
       joined: function () { return 'खिलाड़ी शामिल हुए'; },
       minToStart: function (n) { return 'शुरू करने के लिए कम से कम ' + n; },
       start: 'गेम शुरू करें',
+      startWarning: '⚠️ गेम शुरू होने के बाद कोई और शामिल नहीं हो सकता — जो अभी आ रहे हैं उन्हें अगले गेम का इंतज़ार करना होगा।',
       needMore: function (n) { return n + ' और चाहिए'; },
       hostStarts: 'होस्ट को गेम शुरू करना है।',
       hostStartsSub: 'कुछ सेकंड रुकें — यह पेज अपने आप शुरू हो जाएगा।',
       invite: 'दोस्तों को बुलाएँ', leave: 'बाहर निकलें',
+      showAll: function (n) { return n + ' और दिखाएँ'; },
+      showFewer: 'कम दिखाएँ',
+      wrongAnswer: 'यह नंबर आपके टिकट पर है — इसे आपके लिए काट दिया गया है।',
       selfUpdates: 'दोस्तों के शामिल होते ही यह पेज अपने आप अपडेट होता है।',
-      won: 'बधाई हो!', thanks: 'खेलने के लिए धन्यवाद!',
+      won: 'आप जीत गए!', wonSub: 'फुल हाउस — पूरा टिकट। बहुत खूब।',
+      thanks: 'खेलने के लिए धन्यवाद!',
+      winnerSub: 'ने फुल हाउस के साथ गेम जीता',
+      thanksSub: 'अच्छा खेल रहा। होस्ट से नया गेम शुरू करने को कहें।',
       over: function (room, n) { return 'रूम ' + room + ' · ' + n + ' नंबर बोले गए'; },
       noPrizes: 'किसी ने इनाम का दावा नहीं किया।',
       backToWa: 'WhatsApp पर लौटें — हमें बताएँ कैसा रहा',
@@ -395,6 +486,13 @@ export function renderBoardPage(token: string): string {
     offlineEl.textContent = t().reconnecting;
     render();
   }
+
+  var cheerEl = document.getElementById('cheer');
+  var namesOpen = false;
+  var overShown = false;
+  var wonSeen = {};
+  var wonReady = false;
+  var lastAnswered = null;
 
   var rotateEl = document.getElementById('rotate');
   var rotateDone = false;
@@ -453,6 +551,9 @@ export function renderBoardPage(token: string): string {
     return fetch(BASE + '/state', { headers: { 'Accept': 'application/json' } })
       .then(function (r) {
         if (r.status === 404 || r.status === 410) { showGone(); return null; }
+        // Rate limited: slow down rather than showing "Reconnecting", which
+        // reads as a broken network when it is only us asking too often.
+        if (r.status === 429) { pollMs = 3000; clearInterval(timer); timer = setInterval(refresh, pollMs); return null; }
         return r.json();
       })
       .then(function (j) {
@@ -511,22 +612,100 @@ export function renderBoardPage(token: string): string {
     var items = '';
     for (var i = 0; i < s.prizes.length; i++) {
       var p = s.prizes[i];
-      items += '<li><span class="name">' + esc(p.label) + '</span>' +
+      var ready = !p.wonBy && p.claimable;
+      items += '<li class="' + (ready ? 'ready' : '') + '">' +
+        '<span class="name">' + esc(p.label) +
+          (ready ? '<span class="readytag">' + t().ready + '</span>' : '') + '</span>' +
         (p.wonBy
           ? '<span class="won">' + esc(p.wonBy) + '</span>'
-          : '<button data-claim="' + esc(p.key) + '">' + t().claim + '</button>') +
+          : '<button class="' + (ready ? 'ready' : '') + '" data-claim="' + esc(p.key) + '">' +
+            (ready ? t().claimNow : t().claim) + '</button>') +
         '</li>';
     }
     return '<div class="card"><h2>' + t().prizes + '</h2><ul class="prizes">' + items + '</ul></div>';
   }
 
+  /** The banner under the called number, when something is winnable now. */
+  function claimBanner(s) {
+    var ready = (s.prizes || []).filter(function (p) { return !p.wonBy && p.claimable; });
+    if (!ready.length) return '';
+    return '<div class="claimnow">' + t().canClaim(ready.map(function (p) { return p.label; })) + '</div>';
+  }
+
+  /**
+   * Celebrates a prize, for everyone in the room.
+   *
+   * Shown to the winner and to everyone else, because a prize nobody sees being
+   * won is not a prize. Fires from a change in the state we already poll, so it
+   * needs no extra request.
+   */
+  function cheer(emoji, who, what) {
+    cheerEl.innerHTML = '<div class="box"><div class="emoji">' + emoji + '</div>' +
+      '<div class="who">' + esc(who) + '</div>' +
+      '<div class="what">' + esc(what) + '</div></div>';
+    cheerEl.classList.add('show');
+    confetti();
+    setTimeout(function () { cheerEl.classList.remove('show'); }, 2600);
+  }
+
+  function confetti() {
+    var colours = ['#f0a202', '#7d0f22', '#1f9d55', '#3aa0ff', '#e94f8a'];
+    for (var i = 0; i < 34; i++) {
+      var bit = document.createElement('div');
+      bit.className = 'confetti';
+      bit.style.left = Math.random() * 100 + 'vw';
+      bit.style.background = colours[i % colours.length];
+      bit.style.animationDuration = (1.6 + Math.random() * 1.4) + 's';
+      bit.style.animationDelay = (Math.random() * 0.5) + 's';
+      document.body.appendChild(bit);
+      (function (el) { setTimeout(function () { el.remove(); }, 3600); })(bit);
+    }
+  }
+
+  /**
+   * Notices prizes won since the last poll.
+   *
+   * Compared against what we last saw rather than driven by an event, because
+   * the board is a polling page: whoever wins, every other board learns about
+   * it on its next tick, and that tick is where the celebration belongs.
+   */
+  function celebrateNewWins(s) {
+    var seenNow = {};
+    (s.prizes || []).forEach(function (p) { if (p.wonBy) seenNow[p.key] = p.wonBy; });
+
+    for (var key in seenNow) {
+      if (wonSeen[key]) continue;
+      // First poll of a page that opened mid-game: catch up silently rather
+      // than firing six celebrations at once.
+      if (!wonReady) continue;
+      var label = '';
+      (s.prizes || []).forEach(function (p) { if (p.key === key) label = p.label; });
+      var mine = seenNow[key] === s.playerName;
+      cheer(mine ? '🏆' : '🎉', mine ? t().youWon(label) : seenNow[key], mine ? '' : t().wonPrize(label));
+      break; // one celebration per tick, never a pile-up
+    }
+    wonSeen = seenNow;
+    wonReady = true;
+  }
+
   function lobbyHtml(s) {
-    var names = s.playerNames.map(function (n) { return '<span>' + esc(n) + '</span>'; }).join('');
+    // A party room can hold forty. Forty name pills push Start off the screen,
+    // and the count is what a host is actually watching — so past a dozen the
+    // names fold away behind a tap rather than growing without limit.
+    var all = s.playerNames || [];
+    var MANY = 12;
+    var shown = namesOpen ? all : all.slice(0, MANY);
+    var names = shown.map(function (n) { return '<span>' + esc(n) + '</span>'; }).join('');
+    if (all.length > MANY) {
+      names += '<button class="more" data-names="1">' +
+        (namesOpen ? t().showFewer : t().showAll(all.length - MANY)) + '</button>';
+    }
     var target = s.expectedPlayers ? ' of ' + s.expectedPlayers : '';
     var enough = s.canStart;
 
     var action = s.isHost
-      ? '<div class="row" style="margin-top:14px">' +
+      ? (enough ? '<div class="lockwarn">' + t().startWarning + '</div>' : '') +
+        '<div class="row" style="margin-top:14px">' +
           '<button class="primary" data-start="1"' + (enough ? '' : ' disabled') + '>' +
           (enough ? t().start : t().needMore(s.minPlayers - s.playersJoined)) + '</button></div>'
       : '<div class="answered" style="margin-top:12px"><strong>' + t().hostStarts + '</strong>' +
@@ -539,7 +718,7 @@ export function renderBoardPage(token: string): string {
         '<div class="count">' + s.playersJoined + target + '</div>' +
         '<div class="of">' + t().joined(s.playersJoined) + '</div>' +
         '<div class="need">' + t().minToStart(s.minPlayers) + '</div>' +
-        '<div class="names">' + names + '</div>' +
+        '<div class="names' + (all.length > 18 ? ' many' : '') + '">' + names + '</div>' +
         action +
         '<div class="row" style="margin-top:8px">' +
           '<button class="ghost" data-invite="1">' + t().invite + '</button>' +
@@ -549,15 +728,33 @@ export function renderBoardPage(token: string): string {
       '<div class="footer">' + t().selfUpdates + '</div>';
   }
 
+  /**
+   * The last screen of the game.
+   *
+   * Two genuinely different moments, not one screen with a different word in
+   * it. Winning a full house is the loudest thing that happens in housie and
+   * deserves the whole screen; for everyone else the job is to name the winner
+   * generously and make them want another game, rather than to announce that
+   * they lost.
+   */
   function overHtml(s) {
     var lines = s.prizes.filter(function (p) { return p.wonBy; })
       .map(function (p) { return esc(p.label) + ' — ' + esc(p.wonBy); }).join('<br>');
+
+    var winner = '';
+    s.prizes.forEach(function (p) { if (p.key === 'full_house' && p.wonBy) winner = p.wonBy; });
+
+    var head = s.iWon
+      ? '<div class="big">🏆</div><h1>' + t().won + '</h1>' +
+        '<p class="sub">' + t().wonSub + '</p>'
+      : '<div class="big">🎉</div><h1>' + (winner ? esc(winner) : t().thanks) + '</h1>' +
+        '<p class="sub">' + (winner ? t().winnerSub : t().thanksSub) + '</p>';
+
     return '<div class="card"><div class="bar"><strong>' + esc(s.brand) + '</strong>' +
-      '<span>' + langPill() + '</span></div><div class="over">' +
-      '<div class="big">' + (s.iWon ? '🏆' : '🎉') + '</div>' +
-      '<h1>' + (s.iWon ? t().won : t().thanks) + '</h1>' +
+      '<span>' + langPill() + '</span></div><div class="over' + (s.iWon ? ' iwon' : '') + '">' +
+      head +
       '<p>' + t().over(esc(s.roomCode), s.called.length) + '</p>' +
-      (lines ? '<p>' + lines + '</p>' : '<p>' + t().noPrizes + '</p>') +
+      (lines ? '<p class="prizelist">' + lines + '</p>' : '<p>' + t().noPrizes + '</p>') +
       '<a class="cta" href="' + WA + '">' + t().backToWa + '</a>' +
       '<a class="promo" href="' + PROMO_URL + '" target="_blank" rel="noopener">' + esc(PROMO_TEXT) + '</a>' +
       '</div></div>' +
@@ -568,7 +765,12 @@ export function renderBoardPage(token: string): string {
     var s = state;
     if (!s) return;
 
-    if (s.status !== 'running' && s.status !== 'lobby') { app.innerHTML = overHtml(s); return; }
+    if (s.status !== 'running' && s.status !== 'lobby') {
+      app.innerHTML = overHtml(s);
+      // Once, on arrival — not on every poll of a finished game.
+      if (!overShown) { overShown = true; confetti(); if (s.iWon) setTimeout(confetti, 700); }
+      return;
+    }
 
     if (s.status === 'lobby') { app.innerHTML = lobbyHtml(s); return; }
 
@@ -614,10 +816,12 @@ export function renderBoardPage(token: string): string {
       }
     }
 
+    celebrateNewWins(s);
+
     var meta = '<div class="meta"><span>' + t().marked(s.markedCount, s.myNumbers.length) + '</span>' +
       '<span>' + esc(s.playerName) + '</span></div>';
 
-    app.innerHTML = head + call + ticketHtml(s) + meta + ask + '</div>' +
+    app.innerHTML = head + call + claimBanner(s) + ticketHtml(s) + meta + ask + '</div>' +
       '<div class="sidebyside">' + prizesHtml(s) + calledHtml(s) + '</div>' +
       '<div class="card"><div class="ask"><div class="row">' +
       '<button class="danger" data-exit="1">' + t().exit + '</button></div></div></div>';
@@ -659,7 +863,8 @@ export function renderBoardPage(token: string): string {
   document.addEventListener('click', function (e) {
     var btn = e.target.closest ? e.target.closest('button') : null;
     if (!btn) return;
-    if (btn.dataset.lang) { setLang(btn.dataset.lang); }
+    if (btn.dataset.names) { namesOpen = !namesOpen; render(); }
+    else if (btn.dataset.lang) { setLang(btn.dataset.lang); }
     else if (btn.dataset.dismissRotate) { dismissRotate(); }
     else if (btn.dataset.start) { btn.disabled = true; post('/start', {}); }
     else if (btn.dataset.invite) {
@@ -668,10 +873,27 @@ export function renderBoardPage(token: string): string {
       else if (navigator.clipboard) { navigator.clipboard.writeText(msg); toast(t().inviteCopied); }
       else { window.open(state.inviteUrl, '_blank'); }
     }
-    else if (btn.dataset.ack) { btn.disabled = true; post('/ack', { hasNumber: btn.dataset.ack === 'yes' }); }
+    else if (btn.dataset.ack) {
+      btn.disabled = true;
+      var saidYes = btn.dataset.ack === 'yes';
+      // Answering "not on my ticket" for a number that IS there costs the
+      // player nothing — marks come from the draw log, not the tap — but they
+      // do not know that, and think they have lost the number. Say so at once.
+      if (!saidYes && state && state.currentNumber &&
+          state.myNumbers.indexOf(state.currentNumber) >= 0) {
+        toast(t().wrongAnswer);
+      }
+      post('/ack', { hasNumber: saidYes });
+    }
     else if (btn.dataset.claim) { btn.disabled = true; post('/claim', { claimType: btn.dataset.claim }); }
     else if (btn.dataset.exit) {
-      if (confirm(t().exitConfirm)) {
+      // The consequence is not the same before and after the first number, and
+      // saying the harsher thing in both cases stops people leaving a lobby
+      // they could rejoin in seconds.
+      var msg = (state && state.status === 'running')
+        ? t().exitConfirmRunning
+        : t().exitConfirmLobby;
+      if (confirm(msg)) {
         post('/exit', {});
       }
     }

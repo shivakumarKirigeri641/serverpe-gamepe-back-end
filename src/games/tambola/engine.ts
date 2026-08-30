@@ -121,13 +121,22 @@ export class TambolaEngine implements GameEngine<TambolaState, TambolaEntryPaylo
 
     const check = checkPattern(entry.payload, claimType, drawnSet(ctx.drawn));
     if (!check.satisfied) {
+      // Name the prize and describe the player's own ticket.
+      //
+      // The old wording — "3 number(s) still to be called" — read as though the
+      // game had numbers left to call, rather than the player needing three
+      // more of theirs, and never said which prize was refused. Somebody who
+      // has just tapped Claim and been told no deserves to know what for.
+      const label = CLAIM_DEFINITIONS.find((c) => c.key === claimType)?.label ?? claimType;
+      const short = check.needed - check.matched;
+
       return {
         ok: false,
         claimType,
         reason:
-          claimType === TAMBOLA_CLAIMS.EARLY_FIVE
-            ? `Only ${check.matched} of your numbers have been called.`
-            : `${check.needed - check.matched} number(s) still to be called.`,
+          `*${label}* is not ready yet — you have ${check.matched} of the ${check.needed} ` +
+          `numbers it needs. ${short} more of your numbers ${short === 1 ? 'has' : 'have'} ` +
+          `to be called.`,
       };
     }
     return { ok: true, claimType };

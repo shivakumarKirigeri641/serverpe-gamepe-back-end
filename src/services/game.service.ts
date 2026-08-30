@@ -483,6 +483,33 @@ export interface DrawOutcome {
  * `expectedSeq` guards against a stale timeout job firing after the tick was
  * already advanced early by every player answering.
  */
+/**
+ * What a room of this many players costs, in the same product the host bought.
+ *
+ * Looked up rather than derived, because bands are a commercial decision that
+ * changes from the admin panel. A host who bought a day pass is priced against
+ * day passes; a single game against single games.
+ */
+async function priceForSeated(
+  seated: number,
+  planKey: string | null,
+  client: Queryable,
+): Promise<number | null> {
+  if (!planKey) return null;
+
+  const row = await queryOne<{ price_paise: number }>(
+    `SELECT p.price_paise
+       FROM plans p
+      WHERE p.is_active
+        AND p.kind = (SELECT kind FROM plans WHERE plan_key = $2)
+        AND $1 BETWEEN p.min_players AND p.max_players
+      LIMIT 1`,
+    [Math.max(seated, 1), planKey],
+    client,
+  );
+  return row?.price_paise ?? null;
+}
+
 export async function performDraw(gameId: string, expectedSeq?: number): Promise<DrawOutcome | null> {
   return withTransaction(async (client) => {
     const game = await lockGame(gameId, client);
@@ -529,15 +556,35 @@ export async function performDraw(gameId: string, expectedSeq?: number): Promise
         };
       }
 
+      // Charge for the room that actually happened, not the one that was
+      // estimated.
+      //
+      // A host guesses "26-50" and pays for that band, then seventeen people
+      // turn up. Holding the game hostage until fifty arrive would be absurd,
+      // and keeping the difference would be charging for empty chairs. So the
+      // price is recomputed from the players actually seated when the first
+      // number is called — the same moment the charge has always happened —
+      // and never exceeds what the host was quoted.
+      //
+      // The overpayment simply stays in their wallet as credit, which is what
+      // the refunds policy already promises: credits are the unit, and unspent
+      // credit is available for the next game.
+      const seated = await countMembers(game.id, client);
+      const actual = await priceForSeated(seated, game.plan_key, client);
+      const chargePaise = Math.min(game.plan_price_paise, actual ?? game.plan_price_paise);
+
       const charged = await postLedgerEntry(
         {
           playerId: game.host_player_id,
-          amountPaise: -game.plan_price_paise,
+          amountPaise: -chargePaise,
           kind: 'game_charge',
           referenceType: 'game',
           referenceId: game.id,
           idempotencyKey: `game:${game.id}`,
-          note: `${game.plan_key ?? 'plan'} - room ${game.room_code}`,
+          note:
+            chargePaise < game.plan_price_paise
+              ? `room ${game.room_code} - ${seated} players, charged for the smaller band`
+              : `${game.plan_key ?? 'plan'} - room ${game.room_code}`,
         },
         client,
       );
