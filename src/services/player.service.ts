@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { queryOne, type Queryable } from '../db/pool.js';
 
 export interface PlayerRow {
@@ -41,8 +42,34 @@ export async function upsertPlayer(
   return player;
 }
 
-export function displayNameOf(player: PlayerRow): string {
-  return player.display_name?.trim() || `Player ${player.wa_id.slice(-4)}`;
+/**
+ * A short, stable label derived from the player's id — never their number.
+ *
+ * The previous fallback used the last four digits of the phone number, which
+ * meant a host could read part of a guest's number off the leaderboard. Four
+ * digits is not the whole number, but it is still their number, and it is the
+ * half that identifies them to anyone who already has the rest.
+ *
+ * Hashing the UUID gives the same label for the same person every time, so
+ * players stay recognisable across a game, while revealing nothing.
+ */
+function anonymousTag(playerId: string): string {
+  return createHash('sha256').update(playerId).digest('hex').slice(0, 4).toUpperCase();
+}
+
+/**
+ * What OTHER players are allowed to see.
+ *
+ * Their WhatsApp profile name if they have one — they chose to publish that —
+ * otherwise an anonymous tag. Never any part of a phone number.
+ */
+export function displayNameOf(player: { id: string; display_name: string | null }): string {
+  return player.display_name?.trim() || `Player ${anonymousTag(player.id)}`;
+}
+
+/** The same rule, for rows that are not full PlayerRows. */
+export function publicName(playerId: string, displayName?: string | null): string {
+  return displayName?.trim() || `Player ${anonymousTag(playerId)}`;
 }
 
 export async function findPlayerById(id: string, client?: Queryable): Promise<PlayerRow | null> {

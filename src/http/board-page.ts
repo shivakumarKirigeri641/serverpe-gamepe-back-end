@@ -141,10 +141,94 @@ export function renderBoardPage(token: string): string {
   .footer { text-align: center; color: var(--muted); font-size: 12px; padding: 6px 0 0; }
   .offline { display: none; text-align: center; background: #fff4d6; color: #7a5b00; font-size: 13px; padding: 8px; border-radius: 10px; margin-bottom: 10px; }
   .offline.show { display: block; }
+
+  /* ---------------------------------------------------------- landscape ---
+     A phone held sideways has about 380px of height and 800px of width. In one
+     column that means the called number and the ticket cannot both be on
+     screen, and the player scrolls between them while the clock runs — the one
+     thing they must never have to do.
+
+     So in landscape the play card becomes two columns: what is happening on
+     the left, the ticket on the right, both in view at once. Everything below
+     it goes side by side too, and the type shrinks to match the shorter page.
+
+     Gated on max-height as well as orientation, so a laptop — also landscape,
+     but with room to spare — keeps the portrait layout it reads better in. */
+  @media (orientation: landscape) and (max-height: 560px) {
+    body { max-width: none; padding: 8px 10px 14px; font-size: 15px; }
+
+    .card { margin-bottom: 8px; }
+
+    /* The play card. Named areas rather than source order, because the ticket
+       has to sit beside the call while staying after it in the DOM for a
+       screen reader and for the portrait layout. */
+    .card.play {
+      display: grid;
+      grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+      grid-template-areas:
+        "bar    bar"
+        "call   ticket"
+        "ask    ticket"
+        "wait   meta";
+      align-items: start;
+    }
+    .card.play .bar    { grid-area: bar; padding: 8px 14px; }
+    .card.play .bar strong { font-size: 15px; }
+    .card.play .call   { grid-area: call; padding: 10px 8px 6px; }
+    .card.play .ticket { grid-area: ticket; align-self: center; padding: 8px 10px; }
+    .card.play .ask    { grid-area: ask; padding: 0 10px 8px; }
+    .card.play .waiting{ grid-area: wait; padding: 0 10px 10px; }
+    .card.play .meta   { grid-area: meta; padding: 0 12px 10px; }
+
+    /* The number stays the loudest thing on the page, just not 68px of it. */
+    .call .num  { font-size: 52px; }
+    .call .nick { font-size: 13px; margin-top: 2px; min-height: 16px; }
+    .call .progress { font-size: 12px; margin-top: 6px; }
+
+    table.ticket td { height: 38px; font-size: 16px; border-spacing: 2px; }
+
+    button { padding: 10px 8px; }
+    .waiting .track { margin-top: 8px; }
+    .waiting .msg { font-size: 13px; }
+
+    /* Prizes and the called list share the width instead of stacking. */
+    .sidebyside { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start; }
+    .sidebyside > .card { margin-bottom: 0; }
+    h2 { padding: 10px 14px 4px; }
+    ul.prizes li { padding: 6px 4px; }
+    .called { max-height: 96px; overflow-y: auto; }
+
+    .lobby { padding: 4px 16px 12px; }
+    .lobby .count { font-size: 26px; }
+    .over { padding: 14px 20px 12px; }
+    .over .big { font-size: 28px; }
+    .over h1 { font-size: 18px; margin: 4px 0 2px; }
+    .over .cta { margin-top: 10px; padding: 11px; }
+    .over .promo { margin-top: 6px; padding: 10px; }
+  }
+
+  /* The nudge to turn the phone. Shown once, in portrait, only while a game is
+     actually running — before that there is nothing to see side by side, and a
+     rotate prompt on a lobby screen is just noise. */
+  .rotate {
+    display: none; align-items: center; gap: 10px;
+    background: #fff8e6; border: 1px solid #f0d9a0; color: #7a5b00;
+    border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; font-size: 13.5px;
+  }
+  .rotate.show { display: flex; }
+  .rotate .icon { font-size: 20px; animation: tilt 2.2s ease-in-out infinite; }
+  @keyframes tilt { 0%, 60%, 100% { transform: rotate(0deg); } 75% { transform: rotate(-90deg); } }
+  .rotate button { flex: 0 0 auto; padding: 6px 10px; font-size: 12px; border-radius: 8px; }
+  @media (orientation: landscape) { .rotate.show { display: none; } }
 </style>
 </head>
 <body>
 <div class="offline" id="offline">Reconnecting…</div>
+<div class="rotate" id="rotate">
+  <span class="icon" aria-hidden="true">📱</span>
+  <span><strong>Turn your phone sideways</strong> — you will see the number and your whole ticket at the same time.</span>
+  <button type="button" data-dismiss-rotate="1">Not now</button>
+</div>
 <div id="app"><div class="card"><div class="call"><div class="nick">Loading your ticket…</div></div></div></div>
 <div class="toast" id="toast"></div>
 
@@ -158,6 +242,17 @@ export function renderBoardPage(token: string): string {
   var toastEl = document.getElementById('toast');
   var offlineEl = document.getElementById('offline');
   var state = null, busy = false, timer = null, lastSeq = -1, pollMs = 3000;
+
+  var rotateEl = document.getElementById('rotate');
+  var rotateDone = false;
+  try { rotateDone = sessionStorage.getItem('mp.rotate') === '1'; } catch (e) {}
+
+  // Turning the phone is itself the acknowledgement — no need to also tap.
+  if (window.matchMedia) {
+    window.matchMedia('(orientation: landscape)').addEventListener('change', function (e) {
+      if (e.matches) dismissRotate();
+    });
+  }
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -293,7 +388,7 @@ export function renderBoardPage(token: string): string {
     var isNew = s.currentSeq !== lastSeq && s.currentNumber;
     if (isNew) lastSeq = s.currentSeq;
 
-    var head = '<div class="card"><div class="bar"><strong>' + esc(s.brand) + '</strong>' +
+    var head = '<div class="card play"><div class="bar"><strong>' + esc(s.brand) + '</strong>' +
       '<span>Room ' + esc(s.roomCode) + ' · Ticket ' + s.entryNo + '</span></div>';
 
     var call = '<div class="call' + (isNew ? ' flash' : '') + '">' +
@@ -335,15 +430,44 @@ export function renderBoardPage(token: string): string {
       '<span>' + esc(s.playerName) + '</span></div>';
 
     app.innerHTML = head + call + ticketHtml(s) + meta + ask + '</div>' +
-      prizesHtml(s) + calledHtml(s) +
+      '<div class="sidebyside">' + prizesHtml(s) + calledHtml(s) + '</div>' +
       '<div class="card"><div class="ask"><div class="row">' +
       '<button class="danger" data-exit="1">Exit this game</button></div></div></div>';
+
+    maybeSuggestRotate(s);
+  }
+
+  /**
+   * Suggests turning the phone, once.
+   *
+   * Only while a game is running and only in portrait: landscape is the layout
+   * that fits the number and the ticket on one screen, and being told about it
+   * on the lobby screen — where there is nothing to fit — teaches the player to
+   * ignore the banner by the time it matters.
+   *
+   * The dismissal is remembered for the session, and any refusal to store it
+   * (private windows, blocked site data) is ignored rather than thrown.
+   */
+  function maybeSuggestRotate(s) {
+    if (rotateDone) return;
+    if (s.status !== 'running') return;
+    // A tablet or laptop already has the room; this is advice for a phone.
+    if (Math.min(screen.width, screen.height) > 500) return;
+    if (window.matchMedia && window.matchMedia('(orientation: landscape)').matches) return;
+    rotateEl.classList.add('show');
+  }
+
+  function dismissRotate() {
+    rotateDone = true;
+    rotateEl.classList.remove('show');
+    try { sessionStorage.setItem('mp.rotate', '1'); } catch (e) {}
   }
 
   document.addEventListener('click', function (e) {
     var t = e.target.closest ? e.target.closest('button') : null;
     if (!t) return;
-    if (t.dataset.start) { t.disabled = true; post('/start', {}); }
+    if (t.dataset.dismissRotate) { dismissRotate(); }
+    else if (t.dataset.start) { t.disabled = true; post('/start', {}); }
     else if (t.dataset.invite) {
       var msg = 'Join my ' + state.brand + ' Tambola game! Tap: ' + state.inviteUrl;
       if (navigator.share) { navigator.share({ text: msg }).catch(function () {}); }

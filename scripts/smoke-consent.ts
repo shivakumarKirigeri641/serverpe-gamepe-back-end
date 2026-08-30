@@ -54,7 +54,7 @@ const U = '919000000041';
 await pool.query('DELETE FROM players WHERE wa_id = $1', [U]);
 
 await send(U, { text: 'hi' });
-ok('first hi shows the terms, not the play menu', (await lastTo(U)).includes('I agree'));
+ok('first hi shows the terms, not the play menu', (await lastTo(U)).includes('Agree & continue'));
 ok('play menu is NOT offered before consent', !(await lastTo(U)).includes('Play Tambola'));
 
 await send(U, { text: 'play' });
@@ -77,7 +77,7 @@ const rows = (await pool.query(
     WHERE player_id=(SELECT id FROM players WHERE wa_id=$1) ORDER BY doc_key`, [U])).rows;
 ok('agreeing records all 5 documents', rows.length === 5);
 console.log('     recorded:', rows.map((r: any) => `${r.doc_key}@v${r.version}`).join(', '));
-ok('agreeing then shows the play menu', (await lastTo(U)).includes('Play Tambola'));
+ok('agreeing resumes what they were doing', (await lastTo(U)).includes('How many players'));
 
 await send(U, { text: 'play' });
 ok('play now works', (await lastTo(U)).includes('How many players'));
@@ -85,7 +85,7 @@ ok('play now works', (await lastTo(U)).includes('How many players'));
 // version bump forces re-consent
 await pool.query("UPDATE legal_documents SET version = version + 1 WHERE doc_key='privacy'");
 await send(U, { text: 'hi' });
-ok('bumping a version forces re-consent', (await lastTo(U)).includes('I agree'));
+ok('bumping a version forces re-consent', (await lastTo(U)).includes('Agree & continue'));
 await pool.query("UPDATE legal_documents SET version = version - 1 WHERE doc_key='privacy'");
 
 console.log(fails === 0 ? 'all checks passed' : `${fails} FAILED`);

@@ -53,6 +53,22 @@ export function parseWebhook(body: WhatsAppWebhookBody): InboundEvent[] {
           continue;
         }
 
+        // A quick-reply on a TEMPLATE message. Meta sends these as their own
+        // type rather than as `interactive`, so without this branch a template
+        // button would land in the "I cannot read that" path and do nothing.
+        //
+        // The payload is what the template defined; the text is what the player
+        // saw on the button. Either can drive the router, so both are passed on.
+        if (message.type === 'button' && 'button' in message) {
+          const payload = message.button.payload?.trim();
+          events.push({
+            ...base,
+            text: message.button.text ?? '',
+            ...(payload ? { actionId: payload } : {}),
+          });
+          continue;
+        }
+
         // Media, reactions, locations: acknowledged, but the player needs
         // telling that we cannot act on them.
         events.push({ ...base, text: '', unsupportedType: message.type });

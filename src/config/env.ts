@@ -63,6 +63,15 @@ const schema = z.object({
   CONSENT_EVERY_GAME: bool,
 
   // ---------- branding ----------
+  /**
+   * Resolve an approximate city/state from the board visitor's IP.
+   * Uses a free third-party service, so it is opt-in.
+   */
+  GEO_LOOKUP_ENABLED: bool,
+
+  /** Where players are told to report abuse and appeal a block. */
+  SUPPORT_EMAIL: z.string().default('support@mastipe.in'),
+
   /** Product name shown to players in chat. */
   BRAND_NAME: z.string().default('MastiPe'),
   /** One-line pitch shown under the name in the welcome message. */
@@ -101,6 +110,15 @@ const schema = z.object({
   // ---------- admin api ----------
   /** Bearer key for /api/admin. Empty disables the admin API entirely. */
   ADMIN_API_KEY: z.string().default(''),
+  /** Passcode the admin panel logs in with. */
+  ADMIN_PASSCODE: z.string().default(''),
+  /** How long an admin session stays valid. */
+  ADMIN_SESSION_TTL_MINUTES: z.coerce.number().int().min(5).max(1440).default(120),
+  /** Failed passcode attempts from one IP before it is locked out. */
+  ADMIN_MAX_LOGIN_ATTEMPTS: z.coerce.number().int().min(3).max(20).default(5),
+  /** How long that lockout lasts. */
+  ADMIN_LOCKOUT_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
+
   /** Comma-separated origins allowed to call the admin API from a browser. */
   ADMIN_CORS_ORIGINS: z.string().default(''),
 

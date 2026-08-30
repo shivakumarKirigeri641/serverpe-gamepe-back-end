@@ -4,6 +4,7 @@ import { env } from '../config/env.js';
 import { query } from '../db/pool.js';
 import { redis } from '../redis/client.js';
 import { logger } from '../utils/logger.js';
+import { verifySession } from '../services/admin-session.service.js';
 
 export interface AdminRequest extends Request {
   adminActor?: string;
@@ -34,23 +35,38 @@ export function clientIp(req: Request): string | null {
  * than left open — an unset secret must never mean "no authentication".
  */
 export function requireAdmin(req: AdminRequest, res: Response, next: NextFunction): void {
-  if (!env.ADMIN_API_KEY) {
-    res.status(503).json({ error: 'Admin API is disabled. Set ADMIN_API_KEY to enable it.' });
-    return;
-  }
+  void (async () => {
+    if (!env.ADMIN_API_KEY && !env.ADMIN_PASSCODE) {
+      res.status(503).json({ error: 'Admin API is disabled. Set ADMIN_API_KEY or ADMIN_PASSCODE.' });
+      return;
+    }
 
-  const header = req.header('authorization') ?? '';
-  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+    const header = req.header('authorization') ?? '';
+    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
 
-  if (!token || !keyMatches(token)) {
+    if (!token) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    // Two ways in: the long-lived API key for scripts and integrations, or a
+    // short-lived session token issued to the browser panel after a passcode.
+    if (env.ADMIN_API_KEY && keyMatches(token)) {
+      req.adminActor = req.header('x-admin-actor')?.slice(0, 64) || 'api-key';
+      next();
+      return;
+    }
+
+    const session = await verifySession(token);
+    if (session) {
+      req.adminActor = session.label || req.header('x-admin-actor')?.slice(0, 64) || 'panel';
+      next();
+      return;
+    }
+
     logger.warn({ ip: clientIp(req), path: req.path }, 'rejected admin request');
     res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-
-  // Optional label so the audit trail can distinguish two people sharing a key.
-  req.adminActor = req.header('x-admin-actor')?.slice(0, 64) || 'admin';
-  next();
+  })();
 }
 
 /**

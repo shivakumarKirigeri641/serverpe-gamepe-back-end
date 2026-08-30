@@ -13,13 +13,14 @@ import {
   listEntriesForPlayer,
   listMembers,
 } from '../services/game.service.js';
-import { displayNameOf, findPlayerById } from '../services/player.service.js';
+import { displayNameOf, findPlayerById, publicName } from '../services/player.service.js';
 import { handleAck, handleClaim, handleLeave, handleStart } from '../services/conversation.service.js';
 import { nicknameFor } from '../games/tambola/nicknames.js';
 import { renderBoardPage } from './board-page.js';
 import { inviteUrl, verifyBoardToken } from './board-token.js';
 import { clientIp } from './admin-auth.js';
 import { markBoardActive } from '../services/presence.service.js';
+import { recordDeviceContext } from '../services/geo.service.js';
 import { queryOne, query } from '../db/pool.js';
 
 /**
@@ -78,6 +79,9 @@ export function createBoardRouter(): Router {
       userAgent: req.header('user-agent') ?? null,
       properties: { referer: req.header('referer') ?? null },
     });
+
+    // Fire and forget: the board renders first, the lookup catches up.
+    void recordDeviceContext(payload.playerId, clientIp(req), req.header('user-agent') ?? null);
 
     res
       .status(200)
@@ -242,15 +246,14 @@ async function buildState(gameId: string, playerId: string): Promise<Record<stri
   );
 
   // Winner names for prizes already gone.
-  const winners = await query<{ claim_type: string; display_name: string | null; wa_id: string }>(
-    `SELECT c.claim_type, p.display_name, p.wa_id
+  const winners = await query<{ claim_type: string; display_name: string | null; player_id: string }>(
+    `SELECT c.claim_type, c.player_id, p.display_name
        FROM game_claims c JOIN players p ON p.id = c.player_id
       WHERE c.game_id = $1 AND c.status = 'awarded'`,
     [gameId],
   );
-  const winnerBy = new Map(
-    winners.map((w) => [w.claim_type, w.display_name?.trim() || `Player ••${w.wa_id.slice(-4)}`]),
-  );
+  // Never a phone number, not even part of one — see publicName.
+  const winnerBy = new Map(winners.map((w) => [w.claim_type, publicName(w.player_id, w.display_name)]));
 
   const enabled = (game.config as { enabledClaims?: string[] }).enabledClaims;
   const prizes = engine
@@ -273,7 +276,7 @@ async function buildState(gameId: string, playerId: string): Promise<Record<stri
     minPlayers,
     canStart: members.length >= minPlayers,
     inviteUrl: inviteUrl(game.room_code),
-    playerNames: members.map((m) => m.display_name?.trim() || `Player ••${m.wa_id.slice(-4)}`),
+    playerNames: members.map((m) => publicName(m.player_id, m.display_name)),
     entryNo: entry.entry_no,
     playerName: displayNameOf(player),
     players: members.length,

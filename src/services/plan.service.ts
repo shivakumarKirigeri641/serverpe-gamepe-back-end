@@ -50,6 +50,20 @@ export async function defaultPlan(): Promise<Plan | null> {
   );
 }
 
+/**
+ * The sticker price, ignoring the trial.
+ *
+ * The marketing site needs this for plans that are not yet on sale: showing
+ * "Free" against a plan that will cost Rs.49 is misleading, even while nothing
+ * is being charged today.
+ */
+export function formatListPrice(plan: Plan): string {
+  if (plan.price_paise === 0) return 'Free';
+  const symbol = plan.currency === 'INR' ? '₹' : `${plan.currency} `;
+  const whole = plan.price_paise / 100;
+  return `${symbol}${Number.isInteger(whole) ? whole : whole.toFixed(2)}`;
+}
+
 /** `Free` while the trial is running, otherwise `₹49`. */
 export function formatPrice(plan: Plan): string {
   if (plan.price_paise === 0 || !isChargingEnabled()) return 'Free';

@@ -49,6 +49,11 @@ export const EVENT = {
   FEEDBACK_COMMENTED: 'feedback.commented',
   PROMO_SHOWN: 'promo.shown',
 
+  // moderation
+  PLAYER_BLOCKED: 'player.blocked',
+  PLAYER_UNBLOCKED: 'player.unblocked',
+  BLOCKED_ATTEMPT: 'player.blocked_attempt',
+
   // web board
   BOARD_OPENED: 'board.opened',
 

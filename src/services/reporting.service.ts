@@ -163,6 +163,11 @@ export async function listPlayers(
 export async function getPlayer(playerId: string): Promise<Record<string, unknown> | null> {
   return queryOne(
     `SELECT p.id, p.wa_id, p.display_name, p.locale, p.is_blocked, p.created_at, p.last_seen_at,
+            p.blocked_at, p.blocked_reason, p.blocked_by,
+            -- Only ever known from a browser visit to their board; WhatsApp
+            -- traffic carries no address. Admin-only, never shown to players.
+            host(p.last_ip) AS last_ip, p.last_region, p.last_city, p.last_country,
+            p.last_user_agent, p.last_device_at,
             COALESCE(s.games_played, 0) AS games_played,
             COALESCE(s.prizes_won, 0)   AS prizes_won,
             COALESCE(s.full_houses, 0)  AS full_houses,

@@ -5,7 +5,12 @@ import { getEngine } from '../core/registry.js';
 import type { ClaimOutcome, Entry } from '../core/types.js';
 import { generateRoomCode } from '../utils/ids.js';
 import { logger } from '../utils/logger.js';
-import { hasSufficientBalance, postLedgerEntry } from './wallet.service.js';
+import {
+  consumeFreeGame,
+  getFreeGames,
+  hasSufficientBalance,
+  postLedgerEntry,
+} from './wallet.service.js';
 
 export type GameStatus = 'lobby' | 'running' | 'completed' | 'cancelled';
 
@@ -22,6 +27,8 @@ export interface GameRow {
   is_free_trial: boolean;
   plan_key: string | null;
   plan_price_paise: number;
+  charged_at: Date | null;
+  charged_paise: number;
   created_at: Date;
   started_at: Date | null;
   ended_at: Date | null;
@@ -39,7 +46,7 @@ export interface EntryRow {
 
 const GAME_COLUMNS = `id, game_key, room_code, status, host_player_id, config, state,
   entry_fee_paise, prize_pool_paise, is_free_trial, plan_key, plan_price_paise,
-  created_at, started_at, ended_at, expected_players`;
+  charged_at, charged_paise, created_at, started_at, ended_at, expected_players`;
 
 export class GameError extends Error {
   constructor(message: string) {
@@ -72,7 +79,7 @@ export async function findActiveGameForPlayer(playerId: string, client?: Queryab
   return queryOne<GameRow>(
     `SELECT g.id, g.game_key, g.room_code, g.status, g.host_player_id, g.config, g.state,
             g.entry_fee_paise, g.prize_pool_paise, g.is_free_trial,
-            g.plan_key, g.plan_price_paise,
+            g.plan_key, g.plan_price_paise, g.charged_at, g.charged_paise,
             g.created_at, g.started_at, g.ended_at, g.expected_players
        FROM games g
        JOIN game_players gp ON gp.game_id = g.id AND gp.left_at IS NULL
@@ -372,6 +379,20 @@ export async function startGame(gameId: string, byPlayerId: string): Promise<Gam
 
     // The host counts as a player, so a minimum of 2 means the host plus one
     // other. The platform floor and the engine's own minimum both apply.
+    // Checked at Start, charged at the first number: the host learns about a
+    // shortfall before their friends are waiting, but is not billed for a game
+    // that never begins.
+    if (game.plan_price_paise > 0 && game.host_player_id) {
+      const comps = await getFreeGames(game.host_player_id, client);
+      const affordable =
+        comps > 0 || (await hasSufficientBalance(game.host_player_id, game.plan_price_paise, client));
+      if (!affordable) {
+        throw new GameError(
+          'Not enough credits to start this game. Send *balance* to check your wallet, then top up.',
+        );
+      }
+    }
+
     const minimum = Math.max(engine.minPlayers, env.MIN_PLAYERS_TO_START);
     if (members < minimum) {
       const short = minimum - members;
@@ -438,6 +459,53 @@ export async function performDraw(gameId: string, expectedSeq?: number): Promise
       [game.id, result.seq, result.value],
       client,
     );
+
+    // The host pays when the game actually delivers something — the first
+    // number — not when they press Start. A room nobody joined, or one
+    // abandoned before it began, therefore costs nothing and the credit stays
+    // in their wallet for the next attempt.
+    if (result.seq === 1 && !game.charged_at && game.plan_price_paise > 0 && game.host_player_id) {
+      // A comped game is spent first, so a free game given for a fault is used
+      // before the host's own money.
+      const usedComp = await consumeFreeGame(game.host_player_id, client);
+
+      if (usedComp) {
+        await query(
+          `UPDATE games SET charged_at = now(), charged_paise = 0, paid_with = 'free_game'
+            WHERE id = $1`,
+          [game.id],
+          client,
+        );
+        return {
+          game: (await lockGame(game.id, client)) ?? game,
+          value: result.value,
+          seq: result.seq,
+          finished: engine.isFinished(result.state as never, await listAwardedClaims(game.id, client)),
+        };
+      }
+
+      const charged = await postLedgerEntry(
+        {
+          playerId: game.host_player_id,
+          amountPaise: -game.plan_price_paise,
+          kind: 'game_charge',
+          referenceType: 'game',
+          referenceId: game.id,
+          idempotencyKey: `game:${game.id}`,
+          note: `${game.plan_key ?? 'plan'} - room ${game.room_code}`,
+        },
+        client,
+      );
+
+      if (charged) {
+        await query(
+          `UPDATE games SET charged_at = now(), charged_paise = $2, paid_with = 'credits'
+            WHERE id = $1`,
+          [game.id, game.plan_price_paise],
+          client,
+        );
+      }
+    }
 
     const awarded = await listAwardedClaims(game.id, client);
     const finished = engine.isFinished(result.state as never, awarded);

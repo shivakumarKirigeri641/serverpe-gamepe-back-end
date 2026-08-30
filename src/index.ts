@@ -2,6 +2,7 @@ import { env } from './config/env.js';
 import { logger } from './utils/logger.js';
 import { registerAllGames } from './games/index.js';
 import { runMigrations } from './db/migrate.js';
+import { ensureUploadFolders } from './services/document.service.js';
 import { pool } from './db/pool.js';
 import { redis } from './redis/client.js';
 import { startServer } from './http/server.js';
@@ -21,6 +22,9 @@ async function main(): Promise<void> {
   // them by running `npm run worker` separately once traffic justifies it.
   const worker = createDrawWorker();
   const maintenance = createMaintenanceWorker();
+  // Created up front so the first report of a fresh deployment does not fail
+  // on a missing directory.
+  await ensureUploadFolders();
   await scheduleMaintenance();
 
   logger.info(

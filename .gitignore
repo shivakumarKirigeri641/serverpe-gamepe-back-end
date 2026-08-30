@@ -8,3 +8,7 @@ coverage/
 .DS_Store
 
 .scratch/
+
+# Generated PDFs. The folders are kept (see .gitkeep), the files are not:
+# they are player records, not source.
+src/uploads/**/*.pdf

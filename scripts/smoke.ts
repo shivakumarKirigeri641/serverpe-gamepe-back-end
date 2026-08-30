@@ -49,6 +49,16 @@ async function send(waId: string, name: string, body: { text?: string; actionId?
   await new Promise(r => setTimeout(r, 850));
 }
 
+/** The last few replies to a number, joined — several actions send more than one. */
+async function recentTo(waId: string, count = 3): Promise<string> {
+  const r = await pool.query(
+    `SELECT body FROM message_log WHERE wa_id=$1 AND direction='outbound'
+      ORDER BY created_at DESC LIMIT $2`,
+    [waId, count],
+  );
+  return JSON.stringify(r.rows.map((x: { body: unknown }) => x.body));
+}
+
 async function lastTo(waId: string): Promise<string> {
   const r = (await pool.query(
     `SELECT body FROM message_log WHERE wa_id=$1 AND direction='outbound' ORDER BY created_at DESC LIMIT 1`, [waId])).rows[0];
@@ -81,6 +91,7 @@ console.log('all fixtures accepted the terms\n');
 await send(H, 'Host', { text: 'hi' });
 await send(H, 'Host', { actionId: 'menu:play:tambola' });
 await send(H, 'Host', { actionId: 'count:tambola:3' });
+await send(H, 'Host', { actionId: 'plan:free_trial' });
 const A = (await pool.query('SELECT id, room_code FROM games ORDER BY created_at DESC LIMIT 1')).rows[0];
 await send(P1, 'P1', { text: `JOIN ${A.room_code}` });
 await send(P2, 'P2', { text: `JOIN ${A.room_code}` });
@@ -90,6 +101,7 @@ console.log(`room A = ${A.room_code}, started\n`);
 // --- an outsider opens a second room, so there is one to poach into ---
 await send(OUT, 'Outsider', { actionId: 'menu:play:tambola' });
 await send(OUT, 'Outsider', { actionId: 'count:tambola:2' });
+await send(OUT, 'Outsider', { actionId: 'plan:free_trial' });
 const B = (await pool.query('SELECT id, room_code FROM games ORDER BY created_at DESC LIMIT 1')).rows[0];
 console.log(`room B = ${B.room_code}, lobby\n`);
 
@@ -105,7 +117,7 @@ ok('mid-game JOIN <other room> is refused', (await lastTo(P1)).includes('still p
 
 // 3. mid-game 'Join a game' menu button
 await send(P1, 'P1', { actionId: 'menu:join' });
-ok("mid-game 'Join a game' button is refused", (await lastTo(P1)).includes('leave'));
+ok("mid-game 'Join a game' button is refused", (await recentTo(P1)).includes('already in room'));
 
 // 4. mid-game 'play'
 await send(P1, 'P1', { text: 'play' });

@@ -73,6 +73,7 @@ for (const u of [A, B, C]) {
 
 await send(A, { actionId: 'menu:play:tambola' });
 await send(A, { actionId: 'count:tambola:3' });
+await send(A, { actionId: 'plan:free_trial' });
 const g = (await pool.query('SELECT id,room_code FROM games ORDER BY created_at DESC LIMIT 1')).rows[0];
 await send(B, { text: `JOIN ${g.room_code}` });
 await send(C, { text: `JOIN ${g.room_code}` });

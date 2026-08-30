@@ -19,6 +19,21 @@ export interface WhatsAppInteractiveMessage {
     | { type: 'nfm_reply'; nfm_reply: { name: string; body?: string; response_json: string } };
 }
 
+/**
+ * A quick-reply tapped on a TEMPLATE message.
+ *
+ * Deliberately not an `interactive` message: Meta delivers template button
+ * taps as their own type, carrying the button's visible text and the payload
+ * defined when the template was created.
+ */
+export interface WhatsAppTemplateButtonMessage {
+  from: string;
+  id: string;
+  timestamp: string;
+  type: 'button';
+  button: { text: string; payload?: string };
+}
+
 export interface WhatsAppOtherMessage {
   from: string;
   id: string;
@@ -26,7 +41,11 @@ export interface WhatsAppOtherMessage {
   type: string;
 }
 
-export type WhatsAppMessage = WhatsAppTextMessage | WhatsAppInteractiveMessage | WhatsAppOtherMessage;
+export type WhatsAppMessage =
+  | WhatsAppTextMessage
+  | WhatsAppInteractiveMessage
+  | WhatsAppTemplateButtonMessage
+  | WhatsAppOtherMessage;
 
 export interface WhatsAppContact {
   wa_id: string;

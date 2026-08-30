@@ -1,5 +1,6 @@
 import { query, type Queryable } from '../db/pool.js';
 import { appWeekStart } from '../utils/time.js';
+import { publicName } from './player.service.js';
 
 /**
  * Points are the trial-period reward. Full House is worth more than the small
@@ -109,7 +110,7 @@ export async function getWeeklyLeaderboard(limit = 10, client?: Queryable): Prom
   );
 }
 
-/** Masks the number: "Ravi" if we know it, else "Player ••4821". */
+/** "Ravi" if they have a profile name, otherwise an anonymous tag. */
 export function leaderboardName(row: LeaderboardRow): string {
-  return row.display_name?.trim() || `Player ••${row.wa_id.slice(-4)}`;
+  return publicName(row.player_id, row.display_name);
 }

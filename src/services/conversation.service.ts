@@ -1,4 +1,4 @@
-import { env, trialEndLabel } from '../config/env.js';
+import { env, isChargingEnabled, trialEndLabel } from '../config/env.js';
 import { getEngine, listEngines } from '../core/registry.js';
 import type { Entry } from '../core/types.js';
 import { redis } from '../redis/client.js';
@@ -49,10 +49,12 @@ import {
   planRow,
 } from './plan.service.js';
 import { logInbound } from './message.service.js';
+import { isBlocked, markBlockNotified, needsBlockNotice } from './moderation.service.js';
 import { claimButtonId, maybeAdvanceEarly, parseFlowToken } from './round.service.js';
 import { boardUrl, inviteUrl, policiesUrl } from '../http/board-token.js';
 import { getStats, getWeeklyLeaderboard, leaderboardName, recordPrizeWon } from './stats.service.js';
 import { buildPlayerReport } from './report.service.js';
+import { getBalance, getFreeGames, walletHistory } from './wallet.service.js';
 
 /**
  * Which engine `play` starts. Nothing else in this file names a specific game —
@@ -68,6 +70,25 @@ type Pending =
   | { awaiting: 'consent'; intent: 'play' | 'join'; gameKey?: string; roomCode?: string }
   | { awaiting: 'player_count'; gameKey: string }
   | { awaiting: 'plan'; gameKey: string; players: number };
+
+/**
+ * Every word the router acts on, including the wording used on template
+ * quick-reply buttons — a template button sends its visible text, not an id.
+ *
+ * Kept in one place because it is also the escape list: anything the bot
+ * understands should never be mistaken for the answer to a pending question.
+ */
+const KNOWN_COMMANDS = new Set([
+  'hi', 'hello', 'hey', 'menu', 'start', 'cancel', 'back', 'stop',
+  'play', 'new', 'play now', 'start playing',
+  'start free trial', 'start free trail', 'free trial', 'free trail',
+  'join',
+  'help', 'how to play', 'how it works',
+  'stats', 'board', 'leaderboard', 'top players',
+  'balance', 'credits', 'wallet', 'my credits', 'check balance',
+  'terms', 'privacy', 'legal',
+  'ticket', 'entry', 'status', 'claim', 'leave',
+]);
 
 /** Smallest room the platform allows — the host is one of these. */
 const minimumPlayers = (): number => Math.max(2, env.MIN_PLAYERS_TO_START);
@@ -136,6 +157,7 @@ async function sendMoreOptions(player: PlayerRow): Promise<void> {
     })),
     { id: 'menu:join', title: 'Join a game', description: 'Enter a room code from a friend' },
     { id: 'cmd:stats', title: 'My stats', description: 'Full report as a PDF' },
+    { id: 'cmd:balance', title: 'My credits', description: 'Wallet balance and recent movements' },
     { id: 'cmd:board', title: 'Leaderboard', description: 'Top players this week' },
     { id: 'menu:help', title: 'How to play', description: 'The rules and the prizes' },
     { id: 'cmd:terms', title: 'Policies & terms', description: 'What you agreed to when you joined' },
@@ -228,7 +250,7 @@ function lobbyCount(game: GameRow, members: number): string {
  */
 function findRoomCodeIn(text: string): string | null {
   const tokens = text.toUpperCase().match(/[A-Z0-9]{4,10}/g) ?? [];
-  const looksLikeJoin = /join/i.test(text) || tokens.length === 1;
+  const looksLikeJoin = /\bjoin\b/i.test(text) || tokens.length === 1;
   if (!looksLikeJoin) return null;
 
   for (const token of tokens) {
@@ -978,6 +1000,48 @@ export async function handleLeave(player: PlayerRow, gameId: string): Promise<vo
   }
 }
 
+/**
+ * Credits and recent movements.
+ *
+ * Shown even during the free trial, so a host can see a promotional credit land
+ * before charging ever starts.
+ */
+async function handleBalance(player: PlayerRow): Promise<void> {
+  const [balancePaise, freeGames, history] = await Promise.all([
+    getBalance(player.id),
+    getFreeGames(player.id),
+    walletHistory(player.id, 5),
+  ]);
+
+  const rupees = (paise: number): string => `Rs.${(Math.abs(paise) / 100).toFixed(2)}`;
+
+  const lines = [
+    `*Your ${env.BRAND_NAME} credits*`,
+    '',
+    `Balance: *${rupees(balancePaise)}*`,
+    ...(freeGames > 0 ? [`Free games: *${freeGames}*`] : []),
+  ];
+
+  if (history.length > 0) {
+    lines.push('', '*Recent*');
+    for (const row of history) {
+      const amount = Number(row['amount_paise'] ?? 0);
+      const sign = amount >= 0 ? '+' : '-';
+      const label = String(row['note'] ?? row['kind'] ?? 'adjustment');
+      lines.push(`${sign}${rupees(amount)} - ${label}`);
+    }
+  }
+
+  lines.push(
+    '',
+    isChargingEnabled()
+      ? '_Credits are only spent once a game starts calling numbers._'
+      : '_Everything is free during the trial - credits are not spent yet._',
+  );
+
+  await sendText(player.wa_id, lines.join('\n'), { playerId: player.id });
+}
+
 async function handleStats(player: PlayerRow): Promise<void> {
   const stats = await getStats(player.id);
 
@@ -1040,6 +1104,33 @@ async function handleLeaderboard(player: PlayerRow): Promise<void> {
  * the user as plain chat messages rather than thrown.
  */
 export async function handleInbound(event: InboundEvent): Promise<void> {
+  // Checked before anything else, and on the number rather than the player
+  // record, so a block holds even if the record is gone.
+  if (await isBlocked(event.waId)) {
+    await track({
+      type: EVENT.BLOCKED_ATTEMPT,
+      source: 'whatsapp',
+      waId: event.waId,
+      properties: { text: event.text.slice(0, 64) },
+    });
+
+    // Told once, not on every message — repeating it would be harassment.
+    if (await needsBlockNotice(event.waId)) {
+      await sendText(
+        event.waId,
+        [
+          `Your number has been blocked from ${env.BRAND_NAME}.`,
+          '',
+          'This usually follows a breach of our terms, such as abuse, cheating, or using the service for betting.',
+          '',
+          `If you believe this is a mistake, write to *${env.SUPPORT_EMAIL}* from the number in question and we will look at it.`,
+        ].join('\n'),
+      );
+      await markBlockNotified(event.waId);
+    }
+    return;
+  }
+
   const player = await upsertPlayer(event.waId, event.profileName);
 
   const activeGame = await findActiveGameForPlayer(player.id);
@@ -1303,14 +1394,17 @@ async function handleText(player: PlayerRow, rawText: string): Promise<void> {
   const text = rawText.trim();
   const lower = text.toLowerCase();
 
-  // A few words always escape a pending question. Without this, a player who
-  // is asked "how many players?" has no way to back out — every reply is read
-  // as an answer, including "hi".
-  const ESCAPE_WORDS = ['hi', 'hello', 'hey', 'menu', 'cancel', 'back', 'stop', 'help', 'terms'];
+  // Any recognised command escapes a pending question. Without this a player
+  // asked "how many players?" has no way out — every reply is read as an
+  // answer, including "hi" and including the wording on a template button,
+  // which is how somebody tapping "My credits" ended up being told to send a
+  // number between 2 and 200.
+  const isCommand = KNOWN_COMMANDS.has(lower);
 
-  // A pending prompt takes priority: the next thing they send is the answer.
-  const pending = ESCAPE_WORDS.includes(lower) ? null : await takePending(player.wa_id);
-  if (ESCAPE_WORDS.includes(lower)) await takePending(player.wa_id);
+  // A pending prompt otherwise takes priority: the next thing they send is
+  // the answer to it.
+  const pending = isCommand ? null : await takePending(player.wa_id);
+  if (isCommand) await takePending(player.wa_id);
 
   if (pending?.awaiting === 'room_code') {
     const code = text.replace(/\s+/g, '').toUpperCase();
@@ -1374,6 +1468,10 @@ async function handleText(player: PlayerRow, rawText: string): Promise<void> {
 
     case 'play':
     case 'new':
+    // Wording used on template quick-reply buttons, which send the button's
+    // visible text rather than an action id.
+    case 'play now':
+    case 'start playing':
       return sendPlayerCountPrompt(player, DEFAULT_GAME);
 
     // Shortcut past the plan picker while the trial is the only live plan.
@@ -1397,6 +1495,7 @@ async function handleText(player: PlayerRow, rawText: string): Promise<void> {
 
     case 'help':
     case 'how to play':
+    case 'how it works':
       return sendHelp(player);
 
     case 'quizpe':
@@ -1428,8 +1527,16 @@ async function handleText(player: PlayerRow, rawText: string): Promise<void> {
     case 'stats':
       return handleStats(player);
 
+    case 'balance':
+    case 'credits':
+    case 'wallet':
+    case 'my credits':
+    case 'check balance':
+      return handleBalance(player);
+
     case 'board':
     case 'leaderboard':
+    case 'top players':
       return handleLeaderboard(player);
 
     default:
