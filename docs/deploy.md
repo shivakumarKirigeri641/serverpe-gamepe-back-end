@@ -1,17 +1,24 @@
 # Deploying MastiPe
 
-Two environments, two files, one rule: **the file decides, not the machine.**
+**One file: `.env`.** The back-end reads `.env` and nothing else, on every
+machine. What differs between a laptop and the server is the contents of that
+file, not which file is loaded — so there is no flag to forget and no second
+file that might be the one actually in force.
 
-| | Local | Production |
+| | Local `.env` | Server `.env` |
 | --- | --- | --- |
-| Back-end | `.env` | `.env.prod` |
-| API origin | `http://localhost:5009` | `https://api.mastipe.in` (server listens on **5006**) |
-| Marketing site | `.env` (proxied) | `.env.production` → `https://mastipe.in` |
-| Admin panel | `.env` (proxied) | `.env.production` → `https://admin.mastipe.in` |
+| API origin | `http://localhost:5009` | `https://api.mastipe.in`, port **5006** |
+| `NODE_ENV` | `development` | `production` |
+| `WHATSAPP_ALLOWED_RECIPIENTS` | your test numbers | **empty** |
+| Razorpay | `rzp_test_…` | `rzp_live_…` |
 
-`.env` and `.env.prod` are gitignored. `.env.example` and the front-ends'
-`.env.production` are committed — they hold no secrets, only which variables
-exist and which host to call.
+`.env` is gitignored and never travels with `git pull`; you put the server's
+copy there once, by hand. `.env.example` is committed and holds no secrets —
+only which variables exist. The front-ends keep Vite's own convention
+(`.env` locally, `.env.production` for a build), which is separate from this.
+
+Environment variables still win over the file, so a systemd unit or a one-off
+`VAR=x npm start` can override a value without editing anything.
 
 ## The order that matters
 
@@ -34,24 +41,27 @@ directory too — the deployed tree needs `src/`, not only `dist/`.
 ## Running
 
 ```bash
-# Local — reads .env
+# Local
 npm run dev
 
-# Production — reads .env.prod
+# Production
 npm run build
-npm run migrate:prod        # migrations first, always
-npm run start:prod
+npm run migrate             # migrations first, always
+npm start
 ```
 
-`--env-file` is Node's own flag, so these work identically in PowerShell, cmd
-and bash. No `VAR=value` prefixes, which do not work on Windows.
+The application loads `.env` itself, with dotenv, so no `--env-file` flag is
+needed and these commands work on any supported Node — including the older one
+on the production server, which is shared with another live service and not
+ours to upgrade in passing.
 
-To run locally *against* production config (rarely, and carefully):
-`npm run dev:prod`.
+To run locally against production values, put them in `.env` — and remember
+that is exactly what makes it dangerous: the same command then talks to the
+live database and the live WhatsApp number.
 
 ## Before the first production boot
 
-`.env.prod` ships with `CHANGE_ME` against every secret, and the server
+`.env.example` carries `CHANGE_ME` against every secret, and the server
 **refuses to start** while any remain. Booting anyway would mean a live service
 with an admin passcode published in this repository. The error names exactly
 which ones are outstanding:
@@ -59,7 +69,7 @@ which ones are outstanding:
 ```
 Refusing to start: WHATSAPP_ACCESS_TOKEN, BOARD_LINK_SECRET, ADMIN_API_KEY,
 ADMIN_PASSCODE, DATABASE_URL, NOREPLYMAIL_PASSWORD, ADMINMAIL_PASSWORD
-still contain CHANGE_ME in .env.prod.
+still contain CHANGE_ME in .env.
 ```
 
 Generate the two secrets with:
@@ -84,7 +94,7 @@ if it is non-empty, because this failure is invisible from the outside.
 
 - `mastipe.in` → the marketing site build (`dist/`)
 - `admin.mastipe.in` → the admin panel build (`dist/`)
-- `api.mastipe.in` → this server on port 5006, behind TLS (`PORT` in `.env.prod`;
+- `api.mastipe.in` → this server on port 5006, behind TLS (`PORT` in the server's `.env`;
   development still uses 5009, so the reverse proxy must name 5006 explicitly)
 
 Webhook URL to paste into the Meta dashboard:

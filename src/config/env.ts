@@ -2,20 +2,18 @@ import { config as loadEnv } from 'dotenv';
 import { z } from 'zod';
 
 /**
- * Which .env file this process reads.
+ * Configuration comes from `.env`, and only `.env`.
  *
- * Two files, one per environment: `.env` for a laptop, `.env.prod` for the
- * server. Picked explicitly rather than by convention so it is never ambiguous
- * which one is live — a production process that silently fell back to a
- * development file would point at a local database and a test WhatsApp number,
- * and nothing would look wrong until a real player messaged.
+ * One file per machine, holding that machine's values: development on a laptop,
+ * production on the server. This is the ordinary convention, and its virtue is
+ * that there is nothing to select — no flag to forget and no second file that
+ * might be the one actually in force.
  *
- * Precedence: variables already in the environment win. That is what lets
- * `node --env-file=.env.prod` (see the start:prod script) and a container's own
- * variables override the file without editing it.
+ * Precedence: variables already in the environment win, so a container, a
+ * systemd unit or a one-off `VAR=x npm start` can override the file without
+ * editing it.
  */
-const ENV_FILE =
-  process.env['ENV_FILE'] ?? (process.env['NODE_ENV'] === 'production' ? '.env.prod' : '.env');
+const ENV_FILE = '.env';
 
 loadEnv({ path: ENV_FILE });
 
@@ -268,7 +266,7 @@ export const env = parsed.data;
 /**
  * Refuses to start production with a placeholder still in place.
  *
- * .env.prod ships with CHANGE_ME against every secret. A server that boots
+ * .env ships with CHANGE_ME against every secret. A server that boots
  * anyway would run with a known admin passcode and a signing key printed in the
  * repository — and nothing would look wrong until somebody found it. Failing at
  * boot is loud, immediate, and happens before a single player is exposed.
