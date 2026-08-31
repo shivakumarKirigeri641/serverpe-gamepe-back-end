@@ -1,0 +1,20 @@
+node_modules/
+dist/
+# Real credentials, never committed — one file per environment.
+.env
+.env.local
+.env.prod
+.env.example
+.env.*.local
+
+# NOTE: .env.example IS committed on purpose. It is the template that tells the
+# next person which variables exist, and ignoring it defeats the point.
+*.log
+coverage/
+.DS_Store
+
+.scratch/
+
+# Generated PDFs. The folders are kept (see .gitkeep), the files are not:
+# they are player records, not source.
+src/uploads/**/*.pdf
