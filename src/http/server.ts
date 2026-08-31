@@ -24,6 +24,7 @@ import { priceForPlayers } from '../services/pricing.service.js';
 import { stateByName, stateCodeFromGstin } from '../services/gst.service.js';
 import { queryOne } from '../db/pool.js';
 import { renderCheckoutClosed, renderCheckoutPage } from './checkout-page.js';
+import { renderDemoPage } from './demo-page.js';
 import { policiesUrl, verifyCheckoutToken, whatsappReturnUrl } from './board-token.js';
 import { formatListPrice, formatPrice, listActivePlans, renderDescription } from '../services/plan.service.js';
 
@@ -374,6 +375,23 @@ export function createServer(): Express {
       logger.error({ err }, 'payment confirmation failed');
       res.status(500).json({ ok: false, error: 'could not confirm' });
     }
+  });
+
+  /**
+   * How to play, and what the prizes mean.
+   *
+   * One page, linked from both the chat menu and the marketing site, so the
+   * explanation exists once rather than twice and cannot drift. Entirely
+   * static: no game, no player, nothing it can affect — which is what makes it
+   * safe to link publicly.
+   */
+  app.get(apiPath('/public/demo'), (req: Request, res: Response) => {
+    const lang = req.query['lang'] === 'hi' ? 'hi' : 'en';
+    res
+      .type('html')
+      .set('Cache-Control', 'public, max-age=600')
+      .set('Access-Control-Allow-Origin', '*')
+      .send(renderDemoPage(lang));
   });
 
   app.get(apiPath('/public/brand'), async (_req: Request, res: Response) => {

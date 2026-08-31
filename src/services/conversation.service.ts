@@ -52,7 +52,7 @@ import {
 import { logInbound } from './message.service.js';
 import { isBlocked, markBlockNotified, needsBlockNotice } from './moderation.service.js';
 import { claimButtonId, maybeAdvanceEarly, parseFlowToken } from './round.service.js';
-import { boardUrl, checkoutUrl, inviteUrl, policiesUrl } from '../http/board-token.js';
+import { boardUrl, checkoutUrl, demoUrl, inviteUrl, policiesUrl } from '../http/board-token.js';
 import { getStats, getWeeklyLeaderboard, leaderboardName, recordPrizeWon } from './stats.service.js';
 import { buildPlayerReport } from './report.service.js';
 import { getBalance, getFreeGames, walletHistory } from './wallet.service.js';
@@ -87,7 +87,7 @@ const KNOWN_COMMANDS = new Set([
   'play', 'new', 'play now', 'start playing',
   'start free trial', 'start free trail', 'free trial', 'free trail',
   'join',
-  'help', 'how to play', 'how it works',
+  'help', 'how to play', 'how it works', 'demo',
   'stats', 'board', 'leaderboard', 'top players',
   'balance', 'credits', 'wallet', 'my credits', 'check balance',
   'terms', 'privacy', 'legal',
@@ -179,7 +179,7 @@ async function sendMoreOptions(player: PlayerRow): Promise<void> {
     { id: 'cmd:stats', title: 'My stats', description: 'Full report as a PDF' },
     { id: 'cmd:balance', title: 'My credits', description: 'Wallet balance and recent movements' },
     { id: 'cmd:board', title: 'Leaderboard', description: 'Top players this week' },
-    { id: 'menu:help', title: 'How to play', description: 'The rules and the prizes' },
+    { id: 'cmd:demo', title: 'How to play', description: 'Watch a round and see what each prize means' },
     { id: 'cmd:terms', title: 'Policies & terms', description: 'What you agreed to when you joined' },
     ...(env.PROMO_URL
       ? [{ id: 'cmd:quizpe', title: 'Try QuizPe', description: env.PROMO_TEXT.slice(0, 72) }]
@@ -1653,6 +1653,31 @@ async function handleText(player: PlayerRow, rawText: string): Promise<void> {
     case 'free trail':
       return sendPlayerCountPrompt(player, DEFAULT_GAME);
 
+    case 'demo':
+    case 'how to play':
+    case 'how it works': {
+      const url = demoUrl();
+      if (!url) return sendHelp(player);
+
+      // A page rather than a wall of text. Tambola is obvious once you have
+      // seen a round and opaque until then, and nobody reads instructions on a
+      // phone — they watch a ticket fill in and understand it at once.
+      await sendCtaUrl(
+        player.wa_id,
+        [
+          `*How to play ${env.BRAND_NAME}*`,
+          '',
+          'Watch a round play out, then see what each of the six prizes means —',
+          'with the winning squares shown on a real ticket.',
+        ].join('\n'),
+        'Watch the demo',
+        url,
+        { playerId: player.id },
+        'Takes a minute',
+      );
+      return;
+    }
+
     case 'testpay': {
       if (!paymentTestAvailable()) return sendMainMenu(player);
 
@@ -1701,8 +1726,6 @@ async function handleText(player: PlayerRow, rawText: string): Promise<void> {
     }
 
     case 'help':
-    case 'how to play':
-    case 'how it works':
       return sendHelp(player);
 
     case 'quizpe':

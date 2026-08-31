@@ -120,3 +120,16 @@ export function checkoutUrl(playerId: string, players: number): string | null {
   const base = env.PUBLIC_BASE_URL.replace(/\/$/, '');
   return `${base}${apiPath('/public/pay')}/${createCheckoutToken(playerId, players)}`;
 }
+
+/**
+ * The public how-to-play page.
+ *
+ * Unsigned, unlike the board and the checkout: it holds nothing personal and is
+ * meant to be forwarded, linked from the marketing site, and opened by people
+ * who have never messaged us.
+ */
+export function demoUrl(lang: 'en' | 'hi' = 'en'): string | null {
+  if (!env.PUBLIC_BASE_URL) return null;
+  const base = env.PUBLIC_BASE_URL.replace(/\/$/, '');
+  return `${base}${apiPath('/public/demo')}${lang === 'hi' ? '?lang=hi' : ''}`;
+}
