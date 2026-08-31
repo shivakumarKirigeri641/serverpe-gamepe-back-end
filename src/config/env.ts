@@ -313,10 +313,12 @@ if (env.NODE_ENV === 'production') {
  * Derived from FREE_TRIAL_ENDS_AT so the date lives in one place; hard-coding
  * it into greetings is how copy and behaviour drift apart.
  */
-export function trialEndLabel(): string {
+export function trialEndLabel(lang: 'en' | 'hi' = 'en'): string {
   const end = new Date(env.FREE_TRIAL_ENDS_AT);
   if (Number.isNaN(end.getTime())) return '';
-  return new Intl.DateTimeFormat('en-GB', {
+  // "6 सितंबर" on the Hindi site: a Hindi sentence with an English month name
+  // in the middle of it reads as a half-finished translation.
+  return new Intl.DateTimeFormat(lang === 'hi' ? 'hi-IN' : 'en-GB', {
     timeZone: env.APP_TIMEZONE,
     day: 'numeric',
     month: 'long',

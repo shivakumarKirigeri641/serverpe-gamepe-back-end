@@ -1,5 +1,5 @@
 import express, { type Express, type Request, type Response } from 'express';
-import { apiPath, env } from '../config/env.js';
+import { apiPath, env, trialEndLabel } from '../config/env.js';
 import { logger } from '../utils/logger.js';
 import { pool } from '../db/pool.js';
 import { markMessageSeen, redis } from '../redis/client.js';
@@ -26,7 +26,14 @@ import { queryOne } from '../db/pool.js';
 import { renderCheckoutClosed, renderCheckoutPage } from './checkout-page.js';
 import { renderDemoPage } from './demo-page.js';
 import { policiesUrl, verifyCheckoutToken, whatsappReturnUrl } from './board-token.js';
-import { formatListPrice, formatPrice, listActivePlans, renderDescription } from '../services/plan.service.js';
+import {
+  formatListPrice,
+  formatPrice,
+  listActivePlans,
+  renderDescription,
+  renderName,
+  renderTagline,
+} from '../services/plan.service.js';
 
 import { isForThisNumber, verifyChallenge, verifySignature } from '../whatsapp/verify.js';
 import type { WhatsAppWebhookBody } from '../whatsapp/types.js';
@@ -415,10 +422,23 @@ export function createServer(): Express {
         res.status(404).json({ error: 'No business profile configured' });
         return;
       }
+      // The trial's end date travels with the company details so the website
+      // can print it. It lives in FREE_TRIAL_ENDS_AT and nowhere else: a date
+      // typed into the marketing copy goes stale the moment the trial moves,
+      // and the site would then promise a deadline the product does not keep.
+      const trialEnd = new Date(env.FREE_TRIAL_ENDS_AT);
+      const trial = Number.isNaN(trialEnd.getTime())
+        ? null
+        : {
+            endsAt: trialEnd.toISOString(),
+            label: trialEndLabel(),
+            over: new Date() > trialEnd,
+          };
+
       res
         .set('Cache-Control', 'public, max-age=300')
         .set('Access-Control-Allow-Origin', '*')
-        .json({ data: profile });
+        .json({ data: { ...profile, trial } });
     } catch (err) {
       logger.error({ err }, 'failed to read business profile');
       res.status(500).json({ error: 'Internal error' });
@@ -427,8 +447,11 @@ export function createServer(): Express {
 
   // Public: the plans the marketing site advertises, so a price change in the
   // admin panel reaches the website without a deploy.
-  app.get(apiPath('/public/plans'), async (_req: Request, res: Response) => {
+  app.get(apiPath('/public/plans'), async (req: Request, res: Response) => {
     try {
+      // The website is bilingual, so the plan copy has to be too — otherwise a
+      // Hindi page prints an English plan name in the middle of itself.
+      const lang = req.query.lang === 'hi' ? 'hi' : 'en';
       // Plans that cannot be bought yet are hidden until SHOW_UNAVAILABLE_PLANS
       // is turned on. Showing a "coming soon" price that has not been decided
       // is a promise that may not be kept, and a number a visitor remembers is
@@ -436,19 +459,20 @@ export function createServer(): Express {
       const all = await listActivePlans();
       const plans = env.SHOW_UNAVAILABLE_PLANS ? all : all.filter((p) => p.is_selectable);
       res
+        .set('Vary', 'Accept-Language')
         .set('Cache-Control', 'public, max-age=300')
         .set('Access-Control-Allow-Origin', '*')
         .json({
           data: plans.map((p) => ({
             key: p.plan_key,
-            name: p.name,
-            tagline: p.tagline,
+            name: renderName(p, lang),
+            tagline: renderTagline(p, lang),
             description: renderDescription(p),
             // What it costs today (free during the trial) and what it will
             // cost when charging starts — a "coming soon" plan must show its
             // real price, not the trial's zero.
-            price: p.is_selectable ? formatPrice(p) : formatListPrice(p),
-            listPrice: formatListPrice(p),
+            price: p.is_selectable ? formatPrice(p, lang) : formatListPrice(p, lang),
+            listPrice: formatListPrice(p, lang),
             pricePaise: p.price_paise,
             maxPlayers: p.max_players,
             available: p.is_selectable,

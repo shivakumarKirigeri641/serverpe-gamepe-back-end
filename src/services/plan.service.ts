@@ -9,11 +9,17 @@ import { isChargingEnabled, trialEndLabel } from '../config/env.js';
  * shown greyed out as "coming soon".
  */
 
+/** The languages a plan can be shown in. Anything else falls back to English. */
+export type PlanLang = 'en' | 'hi';
+
 export interface Plan {
   id: string;
   plan_key: string;
   name: string;
   tagline: string;
+  /** Null until somebody writes the Hindi; English is used until they do. */
+  name_hi: string | null;
+  tagline_hi: string | null;
   description: string;
   price_paise: number;
   currency: string;
@@ -23,8 +29,8 @@ export interface Plan {
   display_order: number;
 }
 
-const PLAN_COLUMNS = `id, plan_key, name, tagline, description, price_paise, currency,
-  max_players, is_active, is_selectable, display_order`;
+const PLAN_COLUMNS = `id, plan_key, name, tagline, name_hi, tagline_hi, description,
+  price_paise, currency, max_players, is_active, is_selectable, display_order`;
 
 export async function listActivePlans(): Promise<Plan[]> {
   return query<Plan>(
@@ -57,16 +63,16 @@ export async function defaultPlan(): Promise<Plan | null> {
  * "Free" against a plan that will cost Rs.49 is misleading, even while nothing
  * is being charged today.
  */
-export function formatListPrice(plan: Plan): string {
-  if (plan.price_paise === 0) return 'Free';
+export function formatListPrice(plan: Plan, lang: PlanLang = 'en'): string {
+  if (plan.price_paise === 0) return lang === 'hi' ? 'मुफ़्त' : 'Free';
   const symbol = plan.currency === 'INR' ? '₹' : `${plan.currency} `;
   const whole = plan.price_paise / 100;
   return `${symbol}${Number.isInteger(whole) ? whole : whole.toFixed(2)}`;
 }
 
 /** `Free` while the trial is running, otherwise `₹49`. */
-export function formatPrice(plan: Plan): string {
-  if (plan.price_paise === 0 || !isChargingEnabled()) return 'Free';
+export function formatPrice(plan: Plan, lang: PlanLang = 'en'): string {
+  if (plan.price_paise === 0 || !isChargingEnabled()) return lang === 'hi' ? 'मुफ़्त' : 'Free';
   const symbol = plan.currency === 'INR' ? '₹' : `${plan.currency} `;
   const whole = plan.price_paise / 100;
   return `${symbol}${Number.isInteger(whole) ? whole : whole.toFixed(2)}`;
@@ -91,7 +97,22 @@ export function chargeableAmount(plan: Plan): number {
  * description goes through here.
  */
 export function renderDescription(plan: Plan): string {
-  return plan.description.replace(/\{TRIAL_END\}/g, trialEndLabel());
+  return fillTrialDate(plan.description);
+}
+
+/** The same substitution for the one-line tagline, which also names the date. */
+export function renderTagline(plan: Plan, lang: PlanLang = 'en'): string {
+  const text = lang === 'hi' && plan.tagline_hi ? plan.tagline_hi : plan.tagline;
+  return fillTrialDate(text, lang);
+}
+
+/** The plan's name, in Hindi where somebody has written one. */
+export function renderName(plan: Plan, lang: PlanLang = 'en'): string {
+  return lang === 'hi' && plan.name_hi ? plan.name_hi : plan.name;
+}
+
+function fillTrialDate(text: string, lang: PlanLang = 'en'): string {
+  return text.replace(/\{TRIAL_END\}/g, trialEndLabel(lang));
 }
 
 /** Row title and description for the WhatsApp plan picker. */
@@ -101,7 +122,7 @@ export function planRow(plan: Plan): { id: string; title: string; description: s
   return {
     id: plan.is_selectable ? `plan:${plan.plan_key}` : `plan:soon:${plan.plan_key}`,
     title: title.slice(0, 24),
-    description: plan.tagline.slice(0, 72),
+    description: renderTagline(plan).slice(0, 72),
   };
 }
 

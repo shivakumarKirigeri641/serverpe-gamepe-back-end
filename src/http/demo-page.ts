@@ -213,18 +213,6 @@ const SYNC_EN: SyncFrame[] = [
     caption: 'The host presses Start. The bot takes over and sends everyone a ticket.',
     screens: ['Game on. You play too.', 'Your ticket is ready.', 'Your ticket is ready.', 'Your ticket is ready.'],
   },
-  {
-    caption: 'One number, all four phones, at the same moment.',
-    screens: ['4 — you have it', '4 — not on your ticket', '4 — you have it', '4 — not on your ticket'],
-  },
-  {
-    caption: "Meera's middle row completes. She claims it; everyone is told.",
-    screens: ['Meera won Middle Line', 'Meera won Middle Line', 'Meera won Middle Line', 'Middle Line is yours!'],
-  },
-  {
-    caption: 'Full House ends the game. Everyone gets their own report.',
-    screens: ['Game over. Report sent.', 'Report sent.', 'Full House — you won!', 'Report sent.'],
-  },
 ];
 
 const SYNC_HI: SyncFrame[] = [
@@ -252,19 +240,37 @@ const SYNC_HI: SyncFrame[] = [
     caption: 'होस्ट ने Start दबाया। अब बॉट होस्ट है और सबको टिकट भेज देता है।',
     screens: ['खेल शुरू। आप भी खेलिए।', 'आपका टिकट तैयार।', 'आपका टिकट तैयार।', 'आपका टिकट तैयार।'],
   },
-  {
-    caption: 'एक नंबर, चारों फ़ोन, एक ही पल में।',
-    screens: ['4 — आपके पास है', '4 — आपके टिकट पर नहीं', '4 — आपके पास है', '4 — आपके टिकट पर नहीं'],
-  },
-  {
-    caption: 'मीरा की बीच वाली लाइन पूरी। दावा किया, सबको पता चल गया।',
-    screens: ['मीरा ने मिडिल लाइन जीती', 'मीरा ने मिडिल लाइन जीती', 'मीरा ने मिडिल लाइन जीती', 'मिडिल लाइन आपकी!'],
-  },
-  {
-    caption: 'फुल हाउस पर खेल खत्म। सबको अपनी रिपोर्ट मिलती है।',
-    screens: ['खेल खत्म। रिपोर्ट भेजी।', 'रिपोर्ट भेजी।', 'फुल हाउस — आप जीते!', 'रिपोर्ट भेजी।'],
-  },
 ];
+
+/**
+ * The four tickets in the room, and the numbers the bot calls.
+ *
+ * Real tickets: five to a row, columns banded 1-9, 10-19 ... 80-90, no number
+ * twice. Fixed rather than generated, because the sequence has to land
+ * somewhere specific — Meera's middle row completing is the moment the claim
+ * is explained, and a random ticket would not give it.
+ */
+const ROOM_TICKETS: (number | null)[][][] = [
+  TICKET,
+  [
+    [6, 12, null, 31, null, 55, null, 72, null],
+    [null, 15, 27, null, 44, null, 63, null, 81],
+    [9, null, 29, 36, null, 59, null, 78, null],
+  ],
+  [
+    [3, 11, 22, null, null, 51, null, null, 84],
+    [null, 19, null, 33, 47, null, 65, 71, null],
+    [7, null, 25, null, 49, 58, null, null, 86],
+  ],
+  [
+    [2, null, 24, 35, null, 53, null, null, 82],
+    [null, 16, null, 39, 46, null, 64, 75, null],
+    [5, 13, null, null, 48, 56, null, 77, null],
+  ],
+];
+
+/** Ten calls: hits spread across all four phones, ending on Meera's row. */
+const ROOM_CALLS = [4, 16, 27, 33, 46, 64, 8, 51, 75, 39];
 
 /** What a claim looks like: the hint, the tap, the verdict — right and wrong. */
 const CLAIM_EN: Bubble[] = [
@@ -368,6 +374,17 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
       ? 'दावा आप करते हैं, जाँच सर्वर करता है — बोले गए नंबरों से मिलाकर। इसलिए बहस की गुंजाइश ही नहीं। हर इनाम सिर्फ़ एक बार, और सबसे पहला सही दावा जीतता है। गलत दावे पर कोई नुकसान नहीं।'
       : 'You claim, the server checks it against the numbers actually called. There is nothing to argue about. Each prize goes once, to the first valid claim, and a wrong claim costs you nothing.',
     hostLabel: hi ? 'रेखा · होस्ट' : 'Rekha · host',
+    botCalling: hi ? 'बॉट नंबर बोल रहा है' : 'The bot is calling',
+    startCalling: hi ? '▶  नंबर बोलना शुरू' : '▶  Start the calling',
+    youHave: hi ? 'आपके टिकट पर ✓' : 'on your ticket ✓',
+    notYours: hi ? 'आपके टिकट पर नहीं' : 'not on your ticket',
+    claimChip: hi ? 'मिडिल लाइन का दावा ▸' : 'Claim Middle Line ▸',
+    capCalling: hi
+      ? 'बॉट एक नंबर बोलता है। जिसके टिकट पर है उसका खाना कट जाता है, बाकी इंतज़ार करते हैं।'
+      : 'The bot calls one number. It marks itself on the tickets that have it; the rest simply wait.',
+    capClaim: hi
+      ? 'मीरा की बीच वाली लाइन पूरी। उन्होंने दावा किया — बॉट ने जाँचा और सबको बता दिया।'
+      : "Meera's middle row is complete. She claims it, the bot checks it and tells everybody.",
     marked: hi ? 'कट गए' : 'marked',
     called: hi ? 'बोले गए' : 'called',
   };
@@ -416,6 +433,15 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
           margin-bottom: 16px; overflow: hidden; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .7px; color: ${COLOR.muted};
        margin: 0; padding: 16px 18px 4px; }
+  /* A card whose action sits at its heading, so the button is on screen the
+     moment the section is — not below content nobody has scrolled past yet. */
+  .head { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+          padding-right: 14px; }
+  .head h2 { padding-right: 0; }
+  .play { flex: 0 0 auto; margin-top: 10px; border: 0; border-radius: 999px; padding: 8px 16px;
+          background: ${COLOR.green}; color: #fff; font: inherit; font-weight: 700;
+          font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .play:disabled { opacity: .5; }
   .lede { color: ${COLOR.muted}; font-size: 13.5px; padding: 0 18px 12px; margin: 0; }
 
   /* ---- the animated round ---- */
@@ -423,6 +449,20 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
   .call .num { font-size: 54px; font-weight: 800; color: ${COLOR.maroon}; line-height: 1;
                font-variant-numeric: tabular-nums; min-height: 56px; }
   .call .nick { color: ${COLOR.muted}; font-size: 14px; font-style: italic; min-height: 20px; }
+  /* The Devanagari form of the number, under the Latin one. Latin stays the
+     larger of the two because that is what is printed on the ticket and on the
+     real game board — the demo must not teach a player to look for a digit
+     shape the board will never show them. */
+  .call .alt { font-size: 22px; font-weight: 700; color: ${COLOR.gold}; line-height: 1;
+               min-height: 24px; }
+  .caller .alt { font-size: 15px; font-weight: 700; opacity: .85; display: block; }
+  .call .who { font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .7px;
+               color: ${COLOR.maroon}; opacity: .75; }
+  /* Whether the number was yours is the only thing a player cares about, so it
+     is said in words under the ticket rather than left to the colour alone. */
+  .call .verdict { font-size: 13px; font-weight: 800; min-height: 20px; margin-top: 4px; }
+  .call .verdict.yes { color: ${COLOR.green}; }
+  .call .verdict.no { color: ${COLOR.muted}; }
   .call .num.blink { animation: blink .4s steps(1) 4; }
   @keyframes blink { 0%,100% { color: ${COLOR.maroon}; } 50% { color: ${COLOR.gold}; } }
 
@@ -469,7 +509,51 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
                    font-size: 11.5px; line-height: 1.4; }
   .phone .screen.wait { color: ${COLOR.muted}; font-style: italic; }
   .phone .screen.hit { background: #eafaf0; color: #14663a; font-weight: 700; }
+  /* the bot's voice, above the four phones */
+  .caller { display: flex; align-items: center; gap: 10px; margin: 0 14px 10px; padding: 10px 14px;
+            background: ${COLOR.maroon}; color: #fff; border-radius: 12px; }
+  .caller .who { font-size: 11px; font-weight: 800; text-transform: uppercase;
+                 letter-spacing: .6px; opacity: .75; }
+  .caller .n { font-size: 30px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums;
+               min-width: 52px; text-align: center; }
+  .caller .nk { font-size: 12.5px; font-style: italic; opacity: .9; }
+  .caller.speak .n { animation: pop .45s ease; }
+  .caller.idle { background: ${COLOR.line}; color: ${COLOR.muted}; }
+
+  .tik { display: grid; grid-template-columns: repeat(9, 1fr); gap: 2px; margin-bottom: 5px; }
+  .tik i { aspect-ratio: 1; border-radius: 2px; background: #e6eaf0; }
+  .tik i.empty { background: #f4f6f9; }
+  .tik i.on { background: ${COLOR.green}; }
+  .tik i.just { background: ${COLOR.gold}; animation: pop .45s ease; }
+  .stat { font-size: 10.5px; font-weight: 700; color: ${COLOR.muted}; min-height: 26px; }
+  .stat.yes { color: #14663a; }
+  .stat.claim { color: #fff; background: ${COLOR.gold}; color: #3a2a00; border-radius: 7px;
+                padding: 4px 5px; text-align: center; animation: nudge 1s ease infinite; }
+  @keyframes nudge { 0%,100% { transform: none; } 50% { transform: translateY(-2px); } }
+
   .caption { padding: 8px 16px 0; font-size: 13.5px; min-height: 40px; }
+  /* The caption is the one line that tells you what just changed, and a line
+     that swaps silently is a line nobody notices. It arrives, and the phones
+     that actually changed pulse with it. */
+  .caption.flash { animation: capIn .45s ease both; }
+  @keyframes capIn {
+    0%   { opacity: 0; transform: translateY(6px); }
+    55%  { opacity: 1; transform: translateY(0); }
+    70%  { background: ${COLOR.gold}22; }
+    100% { opacity: 1; background: transparent; }
+  }
+  .phone .screen.bump { animation: bump .5s ease; }
+  @keyframes bump {
+    0%   { transform: scale(1); box-shadow: 0 0 0 0 ${COLOR.gold}; }
+    35%  { transform: scale(1.05); box-shadow: 0 0 0 3px ${COLOR.gold}66; }
+    100% { transform: scale(1); box-shadow: 0 0 0 0 transparent; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .caption.flash, .phone .screen.bump, table.ticket td.latest, .call .num.blink,
+    .caller.speak .n, .tik i.just, .stat.claim {
+      animation: none;
+    }
+  }
   .dots { display: flex; gap: 5px; justify-content: center; padding: 8px 0 0; }
   .dots i { width: 6px; height: 6px; border-radius: 50%; background: ${COLOR.line}; }
   .dots i.on { background: ${COLOR.maroon}; }
@@ -513,20 +597,37 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
 <p class="ent">${escapeHtml(t.ent)}</p>
 
 <div class="card">
-  <h2>${escapeHtml(t.flow)}</h2>
+  <div class="head">
+    <h2>${escapeHtml(t.flow)}</h2>
+    <button class="play" id="runChat">${escapeHtml(t.playChat)}</button>
+  </div>
   <p class="lede">${escapeHtml(t.flowSub)}</p>
   <div class="chat" id="chat">${renderChat(hi ? CHAT_HI : CHAT_EN, true)}</div>
-  <button class="run" id="runChat">${escapeHtml(t.playChat)}</button>
 </div>
 
 <div class="card">
   <h2>${escapeHtml(t.room)}</h2>
   <p class="lede">${escapeHtml(t.roomSub)}</p>
+  <div class="caller idle" id="caller">
+    <span class="n" id="callNum">–</span>
+    <span class="alt" id="callAlt"></span>
+    <span>
+      <span class="who">${escapeHtml(t.botCalling)}</span>
+      <span class="nk" id="callNick"></span>
+    </span>
+  </div>
+
   <div class="phones">
-    <div class="phone host"><div class="name">${escapeHtml(t.hostLabel)}</div><div class="screen" id="s0"></div></div>
-    <div class="phone"><div class="name">${escapeHtml(hi ? 'अमृता' : 'Amruta')}</div><div class="screen" id="s1"></div></div>
-    <div class="phone"><div class="name">${escapeHtml(hi ? 'रवि' : 'Ravi')}</div><div class="screen" id="s2"></div></div>
-    <div class="phone"><div class="name">${escapeHtml(hi ? 'मीरा' : 'Meera')}</div><div class="screen" id="s3"></div></div>
+    ${[t.hostLabel, hi ? 'अमृता' : 'Amruta', hi ? 'रवि' : 'Ravi', hi ? 'मीरा' : 'Meera']
+      .map(
+        (name, i) => `<div class="phone${i === 0 ? ' host' : ''}">
+          <div class="name">${escapeHtml(name)}</div>
+          <div class="tik" id="k${i}" hidden></div>
+          <div class="screen" id="s${i}"></div>
+          <div class="stat" id="v${i}"></div>
+        </div>`,
+      )
+      .join('')}
   </div>
   <p class="caption" id="caption"></p>
   <div class="dots" id="dots"></div>
@@ -534,12 +635,18 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
 </div>
 
 <div class="card">
-  <h2>${escapeHtml(t.watch)}</h2>
+  <div class="head">
+    <h2>${escapeHtml(t.watch)}</h2>
+    <button class="play" id="run">${escapeHtml(t.play)}</button>
+  </div>
   <p class="lede">${escapeHtml(t.watchSub)}</p>
 
   <div class="call">
+    <div class="who" id="whoCalls">${escapeHtml(t.botCalling)}</div>
     <div class="num" id="num">–</div>
+    <div class="alt" id="numAlt"></div>
     <div class="nick" id="nick"></div>
+    <div class="verdict" id="verdict"></div>
   </div>
 
   <table class="ticket" id="ticket"></table>
@@ -548,8 +655,6 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
     <span id="markedCount">0 ${escapeHtml(t.marked)}</span>
     <span id="calledCount">0 ${escapeHtml(t.called)}</span>
   </div>
-
-  <button class="run" id="run">${escapeHtml(t.play)}</button>
 </div>
 
 <div class="card">
@@ -597,6 +702,21 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
   var LABEL_AGAIN = ${JSON.stringify(t.again)};
 
   var SYNC = ${JSON.stringify(hi ? SYNC_HI : SYNC_EN)};
+  var ROOM = ${JSON.stringify(ROOM_TICKETS)};
+  var CALLS = ${JSON.stringify(ROOM_CALLS)};
+  var ROOM_NICKS = ${JSON.stringify(
+    Object.fromEntries(ROOM_CALLS.map((n) => [n, nicknameFor(n) ?? ''])),
+  )};
+  var L = ${JSON.stringify({
+    startCalling: t.startCalling,
+    youHave: t.youHave,
+    notYours: t.notYours,
+    claimChip: t.claimChip,
+    capCalling: t.capCalling,
+    capClaim: t.capClaim,
+    marked: t.marked,
+    winner: hi ? 'मिडिल लाइन — मीरा ✅' : 'Middle Line — Meera ✅',
+  })};
   var LABEL_NEXT = ${JSON.stringify(t.next)};
   var LABEL_AGAIN_SHORT = ${JSON.stringify(t.again)};
   var LABEL_CHAT = ${JSON.stringify(t.playChat)};
@@ -613,9 +733,15 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
       return;
     }
     chatBubbles[i].classList.add('show');
-    // A button chip is the bot offering a choice; the tap that follows should
-    // land quickly after it, or the pause reads as the bot being slow.
-    var pause = chatBubbles[i].classList.contains('btn') ? 500 : 950;
+
+    // Paced by how much there is to read, not by a fixed tick: a fourteen-word
+    // bubble and the word "hi" were getting the same beat, which made the long
+    // ones flash past before anyone had finished them. A button chip still
+    // gets a shorter pause — it is the bot offering a choice, and the tap that
+    // follows should land soon after, or the bot reads as slow.
+    var el = chatBubbles[i];
+    var words = (el.textContent || '').trim().split(/\s+/).length;
+    var pause = el.classList.contains('btn') ? 1050 : Math.min(3100, 1150 + words * 95);
     chatTimer = setTimeout(function () { revealChat(i + 1); }, pause);
   }
 
@@ -633,29 +759,196 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
   var dotsEl = document.getElementById('dots');
   for (var d = 0; d < SYNC.length; d++) dotsEl.appendChild(document.createElement('i'));
 
-  function showSync(i) {
+  function replay(el, cls) {
+    el.classList.remove(cls);
+    // Reflow, or the browser coalesces the remove and the add and the
+    // animation never runs a second time.
+    void el.offsetWidth;
+    el.classList.add(cls);
+  }
+
+  function showSync(i, animate) {
     syncAt = i;
     var frame = SYNC[i];
     for (var p = 0; p < 4; p++) {
       var el = document.getElementById('s' + p);
       var line = frame.screens[p];
+      // Only the phones whose screen actually changed should pulse: pulsing
+      // all four would say "look here" about the three that did nothing.
+      var changed = el.textContent !== line;
       el.textContent = line;
       // Three states worth distinguishing at a glance: still waiting on
       // somebody else, something good just happened, or ordinary news.
       el.className = 'screen' +
         (/^(Invite|Waiting|इंतज़ार|लिंक)/.test(line) ? ' wait' : '') +
         (/(you have it|yours|you won|आपके पास|आपकी|आप जीते|आप अंदर)/.test(line) ? ' hit' : '');
+      if (animate && changed) replay(el, 'bump');
     }
-    document.getElementById('caption').textContent = frame.caption;
+
+    var cap = document.getElementById('caption');
+    cap.textContent = frame.caption;
+    if (animate) replay(cap, 'flash');
     var dots = dotsEl.children;
     for (var k = 0; k < dots.length; k++) dots[k].className = k === i ? 'on' : '';
-    syncBtn.textContent = i === SYNC.length - 1 ? LABEL_AGAIN_SHORT : LABEL_NEXT;
+    // On the last joining frame the next press starts the bot calling, so the
+    // button says so rather than "Next".
+    syncBtn.textContent = i === SYNC.length - 1 ? L.startCalling : LABEL_NEXT;
+    syncBtn.disabled = false;
+  }
+
+  // ---- the calling phase ----
+  //
+  // Joining is a sequence of decisions, so it is stepped by hand. Calling is
+  // not: it is a rhythm, and the whole point is that one number lands on four
+  // phones at once and each ticket answers for itself. So the button hands
+  // over to a timer here, and the four tickets replace the four text screens.
+  var callerEl = document.getElementById('caller');
+  var callNum = document.getElementById('callNum');
+  var callNick = document.getElementById('callNick');
+  var marks = [[], [], [], []];
+  var callTimer = null;
+
+  function ticketCells(p) {
+    return document.getElementById('k' + p).children;
+  }
+
+  function buildTickets() {
+    for (var p = 0; p < 4; p++) {
+      var host = document.getElementById('k' + p);
+      host.innerHTML = '';
+      for (var r = 0; r < 3; r++) {
+        for (var c = 0; c < 9; c++) {
+          var cell = document.createElement('i');
+          if (ROOM[p][r][c] === null) cell.className = 'empty';
+          host.appendChild(cell);
+        }
+      }
+    }
+  }
+
+  function enterCallPhase() {
+    buildTickets();
+    for (var p = 0; p < 4; p++) {
+      marks[p] = [];
+      document.getElementById('k' + p).hidden = false;
+      document.getElementById('s' + p).hidden = true;
+      document.getElementById('v' + p).textContent = '';
+      document.getElementById('v' + p).className = 'stat';
+    }
+    callerEl.classList.remove('idle');
+    document.getElementById('caption').textContent = L.capCalling;
+    syncBtn.disabled = true;
+    call(0);
+  }
+
+  function call(i) {
+    if (i >= CALLS.length) return claim();
+
+    var n = CALLS[i];
+    callNum.textContent = n;
+    document.getElementById('callAlt').textContent = DEVANAGARI ? dev(n) : '';
+    callNick.textContent = ROOM_NICKS[n] || '';
+    replay(callerEl, 'speak');
+
+    for (var p = 0; p < 4; p++) {
+      var found = -1;
+      for (var r = 0; r < 3 && found < 0; r++) {
+        var c = ROOM[p][r].indexOf(n);
+        if (c >= 0) found = r * 9 + c;
+      }
+
+      var cells = ticketCells(p);
+      // Last call's gold fades to green, so only the newest mark is highlighted.
+      for (var k = 0; k < cells.length; k++) {
+        if (cells[k].className === 'just') cells[k].className = 'on';
+      }
+
+      var stat = document.getElementById('v' + p);
+      if (found >= 0) {
+        cells[found].className = 'just';
+        marks[p].push(n);
+        stat.textContent = fmt(n) + ' ' + L.youHave + ' · ' + fmt(marks[p].length) + ' ' + L.marked;
+        stat.className = 'stat yes';
+      } else {
+        stat.textContent = L.notYours;
+        stat.className = 'stat';
+      }
+    }
+
+    callTimer = setTimeout(function () { call(i + 1); }, 1250);
+  }
+
+  function claim() {
+    // Meera is the fourth phone, and her middle row is what the last call
+    // completed — the claim is offered to her alone, then announced to all.
+    var her = document.getElementById('v3');
+    her.textContent = L.claimChip;
+    her.className = 'stat claim';
+    document.getElementById('caption').textContent = L.capClaim;
+
+    callTimer = setTimeout(function () {
+      for (var p = 0; p < 4; p++) {
+        var stat = document.getElementById('v' + p);
+        stat.textContent = L.winner;
+        stat.className = 'stat yes';
+      }
+      callerEl.classList.add('idle');
+      callNum.textContent = '–';
+      document.getElementById('callAlt').textContent = '';
+      callNick.textContent = '';
+      syncBtn.disabled = false;
+      syncBtn.textContent = LABEL_AGAIN_SHORT;
+    }, 2200);
+  }
+
+  function resetPhones() {
+    clearTimeout(callTimer);
+    callerEl.classList.add('idle');
+    callNum.textContent = '–';
+    document.getElementById('callAlt').textContent = '';
+    callNick.textContent = '';
+    for (var p = 0; p < 4; p++) {
+      document.getElementById('k' + p).hidden = true;
+      document.getElementById('s' + p).hidden = false;
+      document.getElementById('v' + p).textContent = '';
+      document.getElementById('v' + p).className = 'stat';
+    }
   }
 
   syncBtn.addEventListener('click', function () {
-    showSync(syncAt >= SYNC.length - 1 ? 0 : syncAt + 1);
+    // Past the last joining frame the button stops stepping and starts the
+    // calling; pressing it again afterwards takes the room from the top.
+    if (syncAt >= SYNC.length - 1) {
+      if (syncBtn.textContent === LABEL_AGAIN_SHORT) {
+        resetPhones();
+        showSync(0, true);
+        return;
+      }
+      enterCallPhase();
+      return;
+    }
+    showSync(syncAt + 1, true);
   });
-  showSync(0);
+
+  showSync(0, false);
+
+  var DEVANAGARI = ${hi ? 'true' : 'false'};
+
+  /**
+   * The same number in Devanagari digits.
+   *
+   * Shown beside the Latin form on the Hindi page rather than instead of it:
+   * plenty of readers are quicker with one and plenty with the other, and the
+   * ticket itself is printed in Latin.
+   */
+  function dev(n) {
+    return String(n).replace(/[0-9]/g, function (d) { return '०१२३४५६७८९'.charAt(+d); });
+  }
+
+  /** A count as the reader of this page counts. */
+  function fmt(n) {
+    return DEVANAGARI ? dev(n) : String(n);
+  }
 
   var called = [];
   var timer = null;
@@ -679,8 +972,8 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
     for (var i = 0; i < called.length; i++) {
       for (var rr = 0; rr < 3; rr++) if (TICKET[rr].indexOf(called[i]) >= 0) mine++;
     }
-    document.getElementById('markedCount').textContent = mine + ' ' + LABEL_MARKED;
-    document.getElementById('calledCount').textContent = called.length + ' ' + LABEL_CALLED;
+    document.getElementById('markedCount').textContent = fmt(mine) + ' ' + LABEL_MARKED;
+    document.getElementById('calledCount').textContent = fmt(called.length) + ' ' + LABEL_CALLED;
   }
 
   function step(i) {
@@ -694,11 +987,21 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
 
     var numEl = document.getElementById('num');
     numEl.textContent = n;
+    document.getElementById('numAlt').textContent = DEVANAGARI ? dev(n) : '';
     numEl.classList.remove('blink');
     // Reflow, so the animation restarts on every number rather than only once.
     void numEl.offsetWidth;
     numEl.classList.add('blink');
     document.getElementById('nick').textContent = NICKS[n] || '';
+
+    // Every ticket in this demo is the same one, so the verdict is simply
+    // whether the called number is on it — which is exactly the judgement a
+    // player makes on every call.
+    var mine = false;
+    for (var rr = 0; rr < 3; rr++) if (TICKET[rr].indexOf(n) >= 0) mine = true;
+    var verdict = document.getElementById('verdict');
+    verdict.textContent = mine ? L.youHave : L.notYours;
+    verdict.className = 'verdict ' + (mine ? 'yes' : 'no');
 
     draw(n);
     timer = setTimeout(function () { step(i + 1); }, 1100);
@@ -708,6 +1011,7 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
     clearTimeout(timer);
     called = [];
     runBtn.disabled = true;
+    document.getElementById('verdict').textContent = '';
     draw(null);
     step(0);
   });
