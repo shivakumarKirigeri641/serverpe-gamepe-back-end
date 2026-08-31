@@ -26,6 +26,10 @@ const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(5009),
   LOG_LEVEL: z.string().default('info'),
+  // Human-readable log lines instead of JSON. Defaults to on in development.
+  // Worth turning on in production too while watching a launch: JSON is for
+  // machines, and nobody reads a launch through a JSON parser.
+  LOG_PRETTY: z.string().optional(),
 
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),

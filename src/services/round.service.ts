@@ -2,6 +2,7 @@ import { env } from '../config/env.js';
 import { getEngine } from '../core/registry.js';
 import type { Entry } from '../core/types.js';
 import { logger } from '../utils/logger.js';
+import { activity } from '../utils/activity.js';
 import { boardUrl } from '../http/board-token.js';
 import {
   isFlowConfigured,
@@ -274,6 +275,13 @@ export async function runDrawTick(gameId: string, expectedSeq: number): Promise<
     { state: game.state as never, value: outcome.value, seq: outcome.seq, finished: outcome.finished },
     game.state as never,
     game.config as never,
+  );
+
+  activity(
+    'game.draw',
+    `room ${game.room_code} #${outcome.seq} called ${outcome.value} ` +
+      `(${drawn.length}/90) → ${members.length} players`,
+    { gameId: game.id, seq: outcome.seq, value: outcome.value },
   );
 
   const fanOutStartedAt = Date.now();

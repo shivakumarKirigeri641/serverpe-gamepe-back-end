@@ -134,3 +134,37 @@ export function fontForText(text: string, fonts: FontSet, bold = false): string 
   if (!availableScripts().includes(script)) return bold ? fonts.bold : fonts.regular;
   return bold ? `${script}Bold` : script;
 }
+
+/**
+ * Writes the footer band without letting it spill onto a page of its own.
+ *
+ * A4 is 841.9pt and these documents use a 40pt margin, so pdfkit's text area
+ * ends at 801.9. A footer drawn at y=800 is a line about 10pt tall, which
+ * overflows by a hair — and pdfkit's response to overflow is not to clip but to
+ * open a new page and continue there. The continuation is empty, so every
+ * report ended with a blank page that nothing in our own code had asked for.
+ *
+ * Suspending the bottom margin for this one call is the documented way to say
+ * "this is furniture, not flowing text".
+ */
+export function drawFooter(
+  doc: PDFKit.PDFDocument,
+  text: string,
+  font: string,
+  color = '#6b7684',
+): void {
+  const { bottom } = doc.page.margins;
+  doc.page.margins.bottom = 0;
+
+  doc
+    .fillColor(color)
+    .fontSize(8)
+    .font(font)
+    .text(text, 40, doc.page.height - 42, {
+      width: doc.page.width - 80,
+      align: 'center',
+      lineBreak: false,
+    });
+
+  doc.page.margins.bottom = bottom;
+}

@@ -1,7 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { env } from '../config/env.js';
 import { appTimeString } from '../utils/time.js';
-import { useFonts } from './report-fonts.js';
+import { drawFooter, useFonts } from './report-fonts.js';
 import type { DigestStats } from './notification.service.js';
 
 /**
@@ -156,16 +156,12 @@ export async function buildDigestPdf(
     }
   }
 
-  doc
-    .fontSize(8)
-    .fillColor(COLOR.muted)
-    .font(F.regular)
-    .text(
-      `${env.BRAND_NAME} by ServerPe App Solutions — operator digest, not for distribution. No player phone numbers appear in this report.`,
-      40,
-      802,
-      { width: 515, align: 'center' },
-    );
+  drawFooter(
+    doc,
+    `${env.BRAND_NAME} by ServerPe App Solutions — operator digest, not for distribution. No player phone numbers appear in this report.`,
+    F.regular,
+    COLOR.muted,
+  );
 
   doc.end();
   await done;

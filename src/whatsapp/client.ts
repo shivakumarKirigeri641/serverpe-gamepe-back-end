@@ -1,5 +1,6 @@
 import { env } from '../config/env.js';
 import { logger } from '../utils/logger.js';
+import { activity, maskWaId } from '../utils/activity.js';
 import { query } from '../db/pool.js';
 import { EVENT, trackAsync } from '../services/analytics.service.js';
 import { mergeContext } from '../utils/context.js';
@@ -145,7 +146,8 @@ async function post(
   if (!env.WHATSAPP_ACCESS_TOKEN || !env.WHATSAPP_PHONE_NUMBER_ID) {
     // Local development without Meta credentials: log instead of sending so the
     // whole game loop stays exercisable offline.
-    logger.info({ waId, kind, body }, '[whatsapp:dry-run] outbound message');
+    activity('msg.out', `${maskWaId(waId)} ${kind} (dry run, no credentials)`, { kind });
+    logger.debug({ waId, kind, body }, '[whatsapp:dry-run] outbound message');
     const dryRun: SendResult = { ok: true, messageId: `dry-run-${Date.now()}` };
     await logOutbound(waId, kind, body, dryRun, ctx);
     return dryRun;
@@ -171,6 +173,7 @@ async function post(
 
       if (res.ok) {
         const result: SendResult = { ok: true, messageId: json.messages?.[0]?.id };
+        activity('msg.out', `${maskWaId(waId)} ${kind}`, { kind });
         await logOutbound(waId, kind, body, result, ctx);
         return result;
       }

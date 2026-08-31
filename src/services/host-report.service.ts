@@ -4,7 +4,7 @@ import { env } from '../config/env.js';
 import { appTimeString } from '../utils/time.js';
 import { publicName } from './player.service.js';
 import { storeDocument } from './document.service.js';
-import { fontForText, useFonts } from './report-fonts.js';
+import { drawFooter, fontForText, useFonts } from './report-fonts.js';
 
 /**
  * The host's report on a room they ran.
@@ -272,13 +272,12 @@ export async function buildHostReport(
   }
 
   /* footer */
-  doc.fontSize(8).fillColor(COLOR.muted).font(fonts.regular)
-    .text(
-      `${env.BRAND_NAME} by ServerPe App Solutions - played for entertainment only - no phone numbers are shown to hosts or players`,
-      40,
-      800,
-      { width: 515, align: 'center' },
-    );
+  drawFooter(
+    doc,
+    `${env.BRAND_NAME} by ServerPe App Solutions - played for entertainment only - no phone numbers are shown to hosts or players`,
+    fonts.regular,
+    COLOR.muted,
+  );
 
   doc.end();
   await done;

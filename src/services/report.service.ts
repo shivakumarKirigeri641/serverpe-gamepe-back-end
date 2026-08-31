@@ -1,7 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { query, queryOne } from '../db/pool.js';
 import { storeDocument } from './document.service.js';
-import { useFonts, type FontSet } from './report-fonts.js';
+import { drawFooter, useFonts, type FontSet } from './report-fonts.js';
 import { env } from '../config/env.js';
 import { appDate, appDaysAgo, appTimeString } from '../utils/time.js';
 import { displayNameOf, publicName, type PlayerRow } from './player.service.js';
@@ -538,16 +538,12 @@ export async function buildPlayerReport(
     }
   }
 
-  doc
-    .fillColor(COLOR.muted)
-    .fontSize(8)
-    .font(F.regular)
-    .text(
-      safe(`${env.BRAND_NAME} by ServerPe App Solutions - played for entertainment only - ${env.PROMO_URL}`),
-      40,
-      800,
-      { width: 515, align: 'center' },
-    );
+  drawFooter(
+    doc,
+    safe(`${env.BRAND_NAME} by ServerPe App Solutions - played for entertainment only - ${env.PROMO_URL}`),
+    F.regular,
+    COLOR.muted,
+  );
 
   doc.end();
   await done;
