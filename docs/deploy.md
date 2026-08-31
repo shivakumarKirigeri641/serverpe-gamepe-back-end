@@ -13,6 +13,24 @@ Two environments, two files, one rule: **the file decides, not the machine.**
 `.env.production` are committed — they hold no secrets, only which variables
 exist and which host to call.
 
+## The order that matters
+
+The server migrates on boot, and `npm run build` is what puts the migrations
+where the built server can find them (`scripts/copy-assets.mjs`). `tsc` alone
+emits JavaScript and silently leaves `dist/db/migrations` empty, which starts
+cleanly against an unmigrated database — so never deploy a `dist/` built by
+anything but `npm run build`.
+
+## Files that must outlive a deploy
+
+`src/uploads/` holds every invoice and report PDF ever issued, addressed by
+invoice number. If the deploy replaces the working directory, those numbers
+stop resolving and a GST invoice cannot be reproduced. Either keep the folder,
+or move it off the deploy path with `UPLOADS_DIR`.
+
+`src/images/` and `src/assets/fonts/` are read at runtime from the working
+directory too — the deployed tree needs `src/`, not only `dist/`.
+
 ## Running
 
 ```bash
