@@ -4,6 +4,7 @@ dist/
 .env
 .env.local
 .env.prod
+.env.example
 .env.*.local
 
 # NOTE: .env.example IS committed on purpose. It is the template that tells the

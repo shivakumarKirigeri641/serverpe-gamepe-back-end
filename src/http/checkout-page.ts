@@ -1,4 +1,5 @@
 import { apiPath, env } from '../config/env.js';
+import { INDIAN_STATES } from '../services/gst.service.js';
 
 /**
  * The payment page.
@@ -45,11 +46,22 @@ export interface CheckoutView {
   keyId: string;
   gstPercent: number;
   playerName: string;
+  /** Masked: the page is a link that can be forwarded. */
+  maskedNumber: string;
   players: number;
   bandLabel: string;
   options: CheckoutOption[];
   policiesUrl: string | null;
   confirmPath: string;
+  /** Supplier details, for the invoice the payment will produce. */
+  business: {
+    legalName: string;
+    gstin: string | null;
+    state: string | null;
+    stateCode: string | null;
+  };
+  /** Pre-selected when we can guess it; the payer confirms either way. */
+  defaultStateCode: string | null;
 }
 
 function escapeHtml(value: string): string {
@@ -122,7 +134,16 @@ export function renderCheckoutPage(view: CheckoutView): string {
     .join('');
 
   const orders = Object.fromEntries(
-    view.options.map((o) => [o.planKey, { orderId: o.orderId, amount: o.amountPaise }]),
+    view.options.map((o) => [
+      o.planKey,
+      {
+        orderId: o.orderId,
+        amount: o.amountPaise,
+        base: o.basePaise,
+        gst: o.gstPaise,
+        label: o.label,
+      },
+    ]),
   );
 
   return `<!doctype html>
@@ -148,7 +169,7 @@ export function renderCheckoutPage(view: CheckoutView): string {
   .who { padding: 15px 20px 6px; font-size: 14px; color: ${COLOR.muted}; margin: 0; }
   .who b { color: ${COLOR.ink}; }
 
-  .opts { padding: 6px 14px 4px; }
+  .opts { padding: 0; }
   .opt { display: flex; gap: 11px; align-items: flex-start; padding: 13px 12px; margin-bottom: 9px;
          border: 2px solid #e6eaf0; border-radius: 14px; cursor: pointer;
          transition: border-color .15s, background .15s; }
@@ -163,6 +184,27 @@ export function renderCheckoutPage(view: CheckoutView): string {
   .badge { background: ${COLOR.green}; color: #fff; font-size: 11px; font-weight: 800;
            padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
   .split { display: block; color: ${COLOR.muted}; font-size: 11.5px; margin-top: 5px; }
+
+  .block { padding: 14px 20px 4px; border-top: 1px solid #f0f2f6; }
+  .block:first-of-type { border-top: 0; }
+  .blocktitle { font-size: 11px; font-weight: 800; text-transform: uppercase;
+                letter-spacing: .07em; color: ${COLOR.muted}; margin-bottom: 9px; }
+  .req { background: #fdeaea; color: #b3122b; font-size: 9px; padding: 1px 6px;
+         border-radius: 999px; margin-left: 6px; letter-spacing: .04em; }
+  .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; padding: 3px 0; }
+  .kv span { color: ${COLOR.muted}; }
+  .sel { width: 100%; padding: 12px 11px; border: 2px solid #e6eaf0; border-radius: 12px;
+         font: inherit; font-size: 15px; background: #fff; color: ${COLOR.ink}; }
+  .sel:focus { outline: none; border-color: ${COLOR.maroon}; }
+  .hint { color: ${COLOR.muted}; font-size: 12px; margin: 7px 0 0; line-height: 1.5; }
+
+  table.brk { width: 100%; border-collapse: collapse; }
+  table.brk td { padding: 5px 0; font-size: 14px; }
+  table.brk td.v { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  table.brk td.k { color: ${COLOR.muted}; }
+  table.brk tr.total td { border-top: 1px solid #e6eaf0; padding-top: 10px;
+                          font-weight: 800; font-size: 16.5px; }
+  table.brk tr.hidden { display: none; }
 
   .agree { display: flex; gap: 10px; align-items: flex-start; padding: 8px 20px 4px;
            font-size: 13.5px; color: ${COLOR.muted}; cursor: pointer; }
@@ -180,6 +222,15 @@ export function renderCheckoutPage(view: CheckoutView): string {
   .status.show { display: block; }
   .status.ok { color: ${COLOR.green}; font-weight: 700; }
   .status.bad { color: #b3122b; font-weight: 700; }
+  .donebox { padding: 30px 24px 26px; text-align: center; }
+  .doneemoji { font-size: 46px; }
+  .donebox h2 { font-size: 19px; margin: 10px 0 6px; color: ${COLOR.green}; }
+  .donebox p { color: ${COLOR.muted}; font-size: 14px; line-height: 1.6; margin: 0; }
+  .doneback { display: block; margin-top: 20px; padding: 15px; border-radius: 13px;
+              background: ${COLOR.green}; color: #fff; text-decoration: none;
+              font-weight: 700; font-size: 16px; }
+  .donehint { font-size: 12px !important; margin-top: 12px !important; }
+
   .back { display: block; text-align: center; margin-top: 13px; padding: 13px; border-radius: 12px;
           background: #fff; border: 1px solid #e2e7ee; color: ${COLOR.maroon};
           text-decoration: none; font-weight: 700; }
@@ -194,10 +245,51 @@ export function renderCheckoutPage(view: CheckoutView): string {
     <div>Review &amp; pay</div>
   </div>
 
-  <p class="who">Room for <b>${view.players} player${view.players === 1 ? '' : 's'}</b> &middot;
-     ${escapeHtml(view.bandLabel)} &middot; <b>${escapeHtml(view.playerName)}</b></p>
+  <!-- Who is buying, and what for. Shown because a payment page that does not
+       say whose room this is invites the question at the worst moment. -->
+  <div class="block">
+    <div class="blocktitle">Your details</div>
+    <div class="kv"><span>Name</span><b>${escapeHtml(view.playerName)}</b></div>
+    <div class="kv"><span>WhatsApp</span><b>${escapeHtml(view.maskedNumber)}</b></div>
+    <div class="kv"><span>Room size</span><b>${view.players} player${view.players === 1 ? '' : 's'}</b></div>
+    <div class="kv"><span>Price band</span><b>${escapeHtml(view.bandLabel)}</b></div>
+  </div>
 
-  <div class="opts">${optionHtml}</div>
+  <div class="block">
+    <div class="blocktitle">Choose your plan</div>
+    <div class="opts">${optionHtml}</div>
+  </div>
+
+  <!-- Place of supply. Same state is CGST + SGST, other state is IGST; the
+       total is identical, so this is invisible to the payer and unforgiving on
+       the GST return. Asked once, here, rather than guessed. -->
+  <div class="block">
+    <div class="blocktitle">Billing state <span class="req">required</span></div>
+    <select id="state" class="sel">
+      <option value="">Select your state or union territory…</option>
+      ${INDIAN_STATES.map(
+        (st) =>
+          `<option value="${st.code}"${st.code === view.defaultStateCode ? ' selected' : ''}>${escapeHtml(st.name)}</option>`,
+      ).join('')}
+    </select>
+    <p class="hint">Needed for a valid GST invoice. It does not change what you pay.</p>
+  </div>
+
+  <div class="block">
+    <div class="blocktitle">Amount breakup</div>
+    <table class="brk">
+      <tr><td class="k" id="brkPlan">Plan</td><td class="v" id="brkBase">—</td></tr>
+      <tr id="rowCgst"><td class="k">CGST @ ${(view.gstPercent / 2).toFixed(1)}%</td><td class="v" id="brkCgst">—</td></tr>
+      <tr id="rowSgst"><td class="k">SGST @ ${(view.gstPercent / 2).toFixed(1)}%</td><td class="v" id="brkSgst">—</td></tr>
+      <tr id="rowIgst"><td class="k">IGST @ ${view.gstPercent}%</td><td class="v" id="brkIgst">—</td></tr>
+      <tr class="total"><td>Total payable</td><td class="v" id="brkTotal">—</td></tr>
+    </table>
+    <p class="hint" id="supplier">
+      Supplied by ${escapeHtml(view.business.legalName)}${
+        view.business.state ? `, ${escapeHtml(view.business.state)}` : ''
+      }${view.business.gstin ? ` &middot; GSTIN ${escapeHtml(view.business.gstin)}` : ''}
+    </p>
+  </div>
 
   <label class="agree">
     <input type="checkbox" id="agree">
@@ -208,7 +300,7 @@ export function renderCheckoutPage(view: CheckoutView): string {
     }. This is a game played for entertainment only — no betting, and no money to be won.</span>
   </label>
 
-  <button class="pay" id="pay" disabled>Pay ₹${rupees(selected?.amountPaise ?? 0)}</button>
+  <button class="pay" id="pay" disabled>Pay now</button>
   <div class="status" id="status"></div>
 
   <p class="note">Payment is handled by Razorpay. Your card details are never sent to ${escapeHtml(env.BRAND_NAME)}.</p>
@@ -230,21 +322,84 @@ export function renderCheckoutPage(view: CheckoutView): string {
   var RETURN = ${JSON.stringify(wa)};
   var BRAND = ${JSON.stringify(env.BRAND_NAME)};
   var KEY = ${JSON.stringify(view.keyId)};
+  var SUPPLIER_STATE = ${JSON.stringify(view.business.stateCode)};
+  var GST_PCT = ${view.gstPercent};
   var selected = ${JSON.stringify(selected?.planKey ?? '')};
   var busy = false;
 
-  function money(p) { return (p / 100).toFixed(2); }
+  var stateEl = document.getElementById('state');
+  var rowCgst = document.getElementById('rowCgst');
+  var rowSgst = document.getElementById('rowSgst');
+  var rowIgst = document.getElementById('rowIgst');
+
+  function money(p) { return '₹' + (p / 100).toFixed(2); }
+
+  /**
+   * Redraws the breakup for the chosen plan and state.
+   *
+   * The total never changes with the state — only which tax lines it is split
+   * across. Showing both makes that visible, so a payer picking their state
+   * does not wonder whether it moved the price.
+   */
+  function breakup() {
+    var o = ORDERS[selected];
+    if (!o) return;
+
+    var intra = SUPPLIER_STATE && stateEl.value && stateEl.value === SUPPLIER_STATE;
+    var tax = o.gst;
+
+    document.getElementById('brkPlan').textContent = o.label;
+    document.getElementById('brkBase').textContent = money(o.base);
+    document.getElementById('brkTotal').textContent = money(o.amount);
+
+    if (intra) {
+      var sgst = Math.floor(tax / 2);
+      document.getElementById('brkCgst').textContent = money(tax - sgst);
+      document.getElementById('brkSgst').textContent = money(sgst);
+      rowCgst.classList.remove('hidden');
+      rowSgst.classList.remove('hidden');
+      rowIgst.classList.add('hidden');
+    } else {
+      document.getElementById('brkIgst').textContent = money(tax);
+      rowIgst.classList.remove('hidden');
+      rowCgst.classList.add('hidden');
+      rowSgst.classList.add('hidden');
+    }
+  }
 
   function refresh() {
-    payBtn.textContent = 'Pay \\u20B9' + money(ORDERS[selected].amount);
-    // Locked until the box is ticked: agreeing must be an action, not something
-    // implied by pressing Pay.
-    payBtn.disabled = !agree.checked || busy;
+    var o = ORDERS[selected];
+    payBtn.textContent = 'Pay ' + money(o ? o.amount : 0);
+    // Three things must be true: a plan, a state for the invoice, and an
+    // explicit agreement. Pay stays locked until all three are.
+    payBtn.disabled = !agree.checked || !stateEl.value || busy;
+    breakup();
   }
 
   function say(text, cls) {
     statusEl.textContent = text;
     statusEl.className = 'status show ' + (cls || '');
+  }
+
+  /**
+   * The screen after a successful payment.
+   *
+   * Replaces the form entirely and carries its own way back. A redirect out of
+   * an in-app browser is not something a web page can rely on — WhatsApp's own
+   * viewer often refuses it — and the payer was being told they were being
+   * taken somewhere, and then was not. The button always works; the automatic
+   * attempt is a convenience on top of it.
+   */
+  function done(url) {
+    document.querySelector('.card').innerHTML =
+      '<div class="donebox">' +
+        '<div class="doneemoji">\u2705</div>' +
+        '<h2>Payment received</h2>' +
+        '<p>Your credits have been added, and your tax invoice has been sent to you on WhatsApp.</p>' +
+        '<a class="doneback" href="' + url + '">Back to WhatsApp</a>' +
+        '<p class="donehint">If nothing opens, switch back to WhatsApp yourself \u2014 your confirmation is already there.</p>' +
+      '</div>';
+    setTimeout(function () { try { window.location.href = url; } catch (e) {} }, 1200);
   }
 
   opts.forEach(function (el) {
@@ -258,6 +413,7 @@ export function renderCheckoutPage(view: CheckoutView): string {
   });
 
   agree.addEventListener('change', refresh);
+  stateEl.addEventListener('change', refresh);
 
   payBtn.addEventListener('click', function () {
     busy = true; refresh();
@@ -280,7 +436,7 @@ export function renderCheckoutPage(view: CheckoutView): string {
         fetch(CONFIRM, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(resp)
+          body: JSON.stringify(Object.assign({}, resp, { stateCode: stateEl.value }))
         })
           .then(function (r) { return r.json(); })
           .then(function (j) {

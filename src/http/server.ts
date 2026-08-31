@@ -21,6 +21,7 @@ import {
   verifyWebhookSignature,
 } from '../services/payment.service.js';
 import { priceForPlayers } from '../services/pricing.service.js';
+import { stateByName, stateCodeFromGstin } from '../services/gst.service.js';
 import { queryOne } from '../db/pool.js';
 import { renderCheckoutClosed, renderCheckoutPage } from './checkout-page.js';
 import { policiesUrl, verifyCheckoutToken, whatsappReturnUrl } from './board-token.js';
@@ -247,15 +248,18 @@ export function createServer(): Express {
         return;
       }
 
-      const player = await queryOne<{ id: string; wa_id: string; display_name: string | null }>(
-        'SELECT id, wa_id, display_name FROM players WHERE id = $1',
-        [claim.playerId],
-      );
+      const player = await queryOne<{
+        id: string;
+        wa_id: string;
+        display_name: string | null;
+        last_region: string | null;
+      }>('SELECT id, wa_id, display_name, last_region FROM players WHERE id = $1', [claim.playerId]);
       if (!player) {
         res.status(404).type('html').send(renderCheckoutClosed('This payment could not be found.'));
         return;
       }
 
+      const business = await getPublicBusinessProfile();
       const pricing = await priceForPlayers(claim.players);
       const plans = [pricing.single, pricing.unlimited].filter((p) => p !== null);
       if (plans.length === 0) {
@@ -301,11 +305,25 @@ export function createServer(): Express {
             keyId: env.RAZORPAY_KEY_ID,
             gstPercent: env.GST_PERCENT,
             playerName: player.display_name?.trim() || 'you',
+            // Masked: the link can be forwarded, and the last four digits are
+            // enough for the payer to know the page is theirs.
+            maskedNumber: `+${player.wa_id.slice(0, 2)} ••••• ${player.wa_id.slice(-4)}`,
             players: claim.players,
             bandLabel: pricing.bandLabel,
             options,
             policiesUrl: policiesUrl(),
             confirmPath: `${apiPath('/public/pay')}/${req.params['token']}/confirm`,
+            business: {
+              legalName: String(business?.['legalName'] ?? 'ServerPe App Solutions'),
+              gstin: (business?.['gstin'] as string | undefined) ?? null,
+              state:
+                ((business?.['address'] as { state?: string } | undefined)?.state) ?? null,
+              stateCode: stateCodeFromGstin(business?.['gstin'] as string | undefined),
+            },
+            // Pre-selected from the state we resolved when they opened their
+            // board, if we have one. Still confirmed by the payer — an IP
+            // lookup is a guess, and a GST invoice is not the place for one.
+            defaultStateCode: stateByName(player.last_region ?? '')?.code ?? null,
           }),
         );
     } catch (err) {
@@ -346,7 +364,8 @@ export function createServer(): Express {
         return;
       }
 
-      const result = await confirmPayment(orderId, paymentId, signature);
+      const stateCode = typeof body['stateCode'] === 'string' ? body['stateCode'] : null;
+      const result = await confirmPayment(orderId, paymentId, signature, stateCode);
       res.status(result.ok ? 200 : 400).json({
         ...result,
         returnUrl: whatsappReturnUrl(),

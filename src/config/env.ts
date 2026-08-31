@@ -200,6 +200,17 @@ const schema = z.object({
    * verifiable rather than silently 404ing.
    */
   PAYMENTS_ENABLED: bool,
+
+  /**
+   * A "Test payment" row in the chat menu, for exercising Razorpay end to end.
+   *
+   * Deliberately its own switch rather than something inferred, so turning it
+   * off is one obvious line rather than a side effect of another change. It is
+   * additionally refused with live keys — a test affordance that survived into
+   * production would be a way for any player to open a checkout nobody meant to
+   * offer them.
+   */
+  PAYMENT_TEST_MENU: bool,
   RAZORPAY_KEY_ID: z.string().default(''),
   RAZORPAY_KEY_SECRET: z.string().default(''),
   /** Set in Razorpay Dashboard > Settings > Webhooks. Signs the callbacks. */

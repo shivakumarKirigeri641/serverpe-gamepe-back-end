@@ -92,7 +92,23 @@ const KNOWN_COMMANDS = new Set([
   'balance', 'credits', 'wallet', 'my credits', 'check balance',
   'terms', 'privacy', 'legal',
   'ticket', 'entry', 'status', 'claim', 'leave',
+  'testpay',
 ]);
+
+/**
+ * Whether the temporary payment-test row should appear.
+ *
+ * Three conditions, all required. The env switch is the intended control; the
+ * key check is the safety net, because a flag left true after going live would
+ * otherwise offer every player a checkout nobody meant to show them.
+ */
+function paymentTestAvailable(): boolean {
+  return (
+    env.PAYMENT_TEST_MENU &&
+    Boolean(env.RAZORPAY_KEY_ID) &&
+    env.RAZORPAY_KEY_ID.startsWith('rzp_test_')
+  );
+}
 
 /** Smallest room the platform allows — the host is one of these. */
 const minimumPlayers = (): number => Math.max(2, env.MIN_PLAYERS_TO_START);
@@ -167,6 +183,10 @@ async function sendMoreOptions(player: PlayerRow): Promise<void> {
     { id: 'cmd:terms', title: 'Policies & terms', description: 'What you agreed to when you joined' },
     ...(env.PROMO_URL
       ? [{ id: 'cmd:quizpe', title: 'Try QuizPe', description: env.PROMO_TEXT.slice(0, 72) }]
+      : []),
+    // Temporary, and refused with live keys — see PAYMENT_TEST_MENU.
+    ...(paymentTestAvailable()
+      ? [{ id: 'cmd:testpay', title: 'Test payment', description: 'Opens the real checkout in Razorpay test mode' }]
       : []),
   ];
 
@@ -368,21 +388,31 @@ async function sendPlanPrompt(player: PlayerRow, gameKey: string, players: numbe
   const rupees = (paise: number): string => (paise / 100).toFixed(0);
 
   const lines = [
-    `*${players} players* · ${pricing.bandLabel}`,
+    `*Your room: ${players} players*`,
+    `Price band: *${pricing.bandLabel}*`,
     '',
     `🎟️  *One game* — ₹${rupees(pricing.single.amountPaise)}`,
+    `      ${pricing.single.tagline}`,
   ];
 
   if (pricing.unlimited) {
     lines.push(
+      '',
       `🎉  *Day pass* — ₹${rupees(pricing.unlimited.amountPaise)}` +
         (pricing.savingPercent ? `  _(save ${pricing.savingPercent}%)_` : ''),
-      '',
-      '_Day pass = unlimited games for 24 hours._',
+      `      ${pricing.unlimited.tagline}`,
+      `      Unlimited games for 24 hours`,
     );
   }
 
-  lines.push('', '_Prices include GST. Tap below to see the breakup and pay._');
+  lines.push(
+    '',
+    `_Prices include ${env.GST_PERCENT}% GST._`,
+    '_You will only be charged for the players who actually join —_',
+    '_if fewer turn up, the difference stays in your wallet._',
+    '',
+    'Tap below for the full breakup and to pay.',
+  );
 
   await sendCtaUrl(
     player.wa_id,
@@ -1622,6 +1652,41 @@ async function handleText(player: PlayerRow, rawText: string): Promise<void> {
     case 'free trial':
     case 'free trail':
       return sendPlayerCountPrompt(player, DEFAULT_GAME);
+
+    case 'testpay': {
+      if (!paymentTestAvailable()) return sendMainMenu(player);
+
+      // Priced for a ten-player room, so the page shows the genuine bands
+      // rather than a special test amount — the point is to exercise the real
+      // checkout, not a simplified one.
+      const url = checkoutUrl(player.id, 10);
+      if (!url) {
+        await sendText(player.wa_id, 'Checkout is not configured (PUBLIC_BASE_URL is unset).');
+        return;
+      }
+
+      const pricing = await priceForPlayers(10);
+      const money = (paise: number): string => (paise / 100).toFixed(0);
+
+      await sendCtaUrl(
+        player.wa_id,
+        [
+          '*Razorpay test checkout*',
+          '',
+          `A 10-player room — ${pricing.bandLabel}.`,
+          `One game ₹${money(pricing.single?.amountPaise ?? 0)}` +
+            (pricing.unlimited ? ` · Day pass ₹${money(pricing.unlimited.amountPaise)}` : ''),
+          '',
+          '_Test mode — card 4111 1111 1111 1111, any future expiry, any CVV._',
+          '_No real money moves._',
+        ].join('\n'),
+        'Open test checkout',
+        url,
+        { playerId: player.id },
+        'Razorpay test',
+      );
+      return;
+    }
 
     case 'join': {
       const current = await findActiveGameForPlayer(player.id);

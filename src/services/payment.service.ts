@@ -1,9 +1,12 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { query, queryOne, withTransaction } from '../db/pool.js';
+import { query, queryOne, withTransaction, type Queryable } from '../db/pool.js';
 import { env } from '../config/env.js';
 import { logger } from '../utils/logger.js';
 import { postLedgerEntry } from './wallet.service.js';
 import { notify } from './notification.service.js';
+import { splitPlaceOfSupply, stateByCode, stateCodeFromGstin } from './gst.service.js';
+import { buildInvoice } from './invoice.service.js';
+import { sendDocument, sendText, uploadMedia } from '../whatsapp/client.js';
 
 
 /**
@@ -286,9 +289,9 @@ export async function handleWebhook(
           amountPaise: payment.credits_paise,
           kind: 'topup',
           referenceType: 'razorpay',
-          referenceId: paymentId ?? orderId,
-          // The payment id, so a replayed webhook cannot credit twice even if
-          // the row lock above were somehow bypassed.
+          referenceId: payment.id,
+          // Razorpay's payment id, so a replayed webhook cannot credit twice
+          // even if the row lock above were somehow bypassed.
           idempotencyKey: `razorpay:${paymentId ?? orderId}`,
           note: 'Razorpay top-up',
         },
@@ -417,6 +420,8 @@ export async function confirmPayment(
   orderId: string,
   paymentId: string,
   signature: string,
+  /** The GST state the payer selected at checkout. */
+  stateCode: string | null = null,
 ): Promise<ConfirmResult> {
   if (!verifyPaymentSignature(orderId, paymentId, signature)) {
     logger.error({ orderId, paymentId }, 'browser payment signature invalid — refusing to credit');
@@ -447,12 +452,36 @@ export async function confirmPayment(
       return { ok: true, alreadyCredited: true, creditsPaise: payment.credits_paise };
     }
 
+    // Place of supply, and the split it implies. Recorded on the payment
+    // rather than derived at invoice time: rates and registrations change, and
+    // an invoice reprinted next year must show what actually applied today.
+    const supplierState = stateCodeFromGstin(await supplierGstin(client));
+    const gstRow = await queryOne<{ gst_paise: number }>(
+      `SELECT gst_paise FROM payments WHERE id = $1`,
+      [payment.id],
+      client,
+    );
+    const split = splitPlaceOfSupply(gstRow?.gst_paise ?? 0, supplierState, stateCode);
+    const place = stateCode ? (stateByCode(stateCode)?.name ?? null) : null;
+
     await query(
       `UPDATE payments
           SET status = 'paid', payment_id = COALESCE(payment_id, $2),
-              paid_at = now(), credited_at = now(), updated_at = now()
+              paid_at = now(), credited_at = now(), updated_at = now(),
+              place_of_supply = $3, place_of_supply_code = $4,
+              supplier_state = $5,
+              cgst_paise = $6, sgst_paise = $7, igst_paise = $8
         WHERE id = $1`,
-      [payment.id, paymentId],
+      [
+        payment.id,
+        paymentId,
+        place,
+        stateCode,
+        supplierState,
+        split.cgstPaise,
+        split.sgstPaise,
+        split.igstPaise,
+      ],
       client,
     );
 
@@ -463,7 +492,11 @@ export async function confirmPayment(
           amountPaise: payment.credits_paise,
           kind: 'topup',
           referenceType: 'razorpay',
-          referenceId: paymentId,
+          // Our own payment row, because reference_id is a uuid and points at
+          // records in this database. Razorpay's id is not a uuid; it lives on
+          // payments.payment_id and in the idempotency key below, which is
+          // where a lookup by their reference actually belongs.
+          referenceId: payment.id,
           idempotencyKey: `razorpay:${paymentId}`,
           note: 'Razorpay top-up',
         },
@@ -479,6 +512,22 @@ export async function confirmPayment(
     });
 
     logger.info({ orderId, paymentId }, 'payment confirmed in browser and credited');
+
+    // The invoice, and the message that tells them it happened.
+    //
+    // Both after the money is safely recorded, and neither allowed to fail the
+    // payment: someone who paid and got no invoice can be sent one later,
+    // whereas a payment rolled back because a PDF would not render is a
+    // customer charged for nothing.
+    //
+    // The WhatsApp confirmation is not decoration. The page tries to bounce the
+    // payer back to WhatsApp, but a redirect out of an in-app browser is not
+    // something a web page can rely on — so the chat message is what actually
+    // closes the loop, and it arrives whether the redirect worked or not.
+    void confirmToPlayer(payment.id, payment.player_id, payment.wa_id ?? '').catch((err: unknown) => {
+      logger.error({ err, paymentId: payment.id }, 'could not send payment confirmation');
+    });
+
     return { ok: true, alreadyCredited: false, creditsPaise: payment.credits_paise };
   });
 }
@@ -503,6 +552,10 @@ export async function findOrCreateOrder(input: CreateOrderInput): Promise<Create
        FROM payments
       WHERE player_id = $1 AND plan_key = $2 AND status = 'created'
         AND credited_at IS NULL
+        -- Never re-offer an order Razorpay has already seen a payment for.
+        -- Reusing one is a checkout the payer cannot complete: Razorpay refuses
+        -- a second payment on a paid order, and the failure looks like ours.
+        AND payment_id IS NULL
         AND created_at > now() - interval '2 hours'
       ORDER BY created_at DESC LIMIT 1`,
     [input.playerId, input.planKey ?? null],
@@ -530,4 +583,87 @@ export async function orderBelongsTo(orderId: string, playerId: string): Promise
     [orderId, playerId],
   );
   return Number(row?.n ?? 0) > 0;
+}
+
+/** The supplier's GSTIN, for working out the place-of-supply split. */
+async function supplierGstin(client: Queryable): Promise<string | null> {
+  const row = await queryOne<{ gstin: string | null }>(
+    `SELECT gstin FROM business_profile LIMIT 1`,
+    [],
+    client,
+  );
+  return row?.gstin ?? null;
+}
+
+/**
+ * Tells the payer, in WhatsApp, that the money arrived.
+ *
+ * Sent from the server rather than left to the browser, because the browser may
+ * never come back: an in-app WhatsApp browser can refuse a redirect, a phone
+ * can lock, a tab can be closed on the success screen. The one place a payer
+ * definitely returns to is the chat they started in.
+ */
+async function confirmToPlayer(
+  paymentRowId: string,
+  playerId: string | null,
+  waId: string,
+): Promise<void> {
+  const row = await queryOne<{
+    amount_paise: number;
+    credits_paise: number;
+    plan_key: string | null;
+    plan_name: string | null;
+    place_of_supply: string | null;
+    cgst_paise: number;
+    sgst_paise: number;
+    igst_paise: number;
+  }>(
+    `SELECT p.amount_paise, p.credits_paise, p.plan_key, p.place_of_supply,
+            p.cgst_paise, p.sgst_paise, p.igst_paise,
+            (SELECT name FROM plans WHERE plan_key = p.plan_key) AS plan_name
+       FROM payments p WHERE p.id = $1`,
+    [paymentRowId],
+  );
+  if (!row) return;
+
+  const rupees = (paise: number): string => (paise / 100).toFixed(2);
+  const tax =
+    row.igst_paise > 0
+      ? `IGST Rs ${rupees(row.igst_paise)}`
+      : `CGST Rs ${rupees(row.cgst_paise)} + SGST Rs ${rupees(row.sgst_paise)}`;
+
+  await sendText(
+    waId,
+    [
+      `✅ *Payment received — Rs ${rupees(row.amount_paise)}*`,
+      '',
+      `${row.plan_name ?? row.plan_key ?? 'MastiPe'}`,
+      `Includes ${tax}${row.place_of_supply ? ` · ${row.place_of_supply}` : ''}`,
+      '',
+      `Your wallet has been credited with *Rs ${rupees(row.credits_paise)}*.`,
+      'Send *play* to start your game, or *balance* to check your wallet.',
+      '',
+      '_Your tax invoice is attached below._',
+    ].join('\n'),
+    playerId ? { playerId } : undefined,
+  );
+
+  // The invoice second, so the short confirmation lands first and the PDF sits
+  // under it rather than pushing it out of view.
+  const invoice = await buildInvoice(paymentRowId);
+  if (!invoice) return;
+
+  const mediaId = await uploadMedia(invoice.buffer, 'application/pdf', invoice.filename);
+  if (!mediaId) {
+    logger.warn({ paymentRowId }, 'invoice built but could not be uploaded');
+    return;
+  }
+
+  await sendDocument(
+    waId,
+    mediaId,
+    invoice.filename,
+    `Tax invoice ${invoice.docNumber}`,
+    playerId ? { playerId } : undefined,
+  );
 }
