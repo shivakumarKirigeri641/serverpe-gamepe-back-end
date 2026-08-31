@@ -5,7 +5,7 @@ Two environments, two files, one rule: **the file decides, not the machine.**
 | | Local | Production |
 | --- | --- | --- |
 | Back-end | `.env` | `.env.prod` |
-| API origin | `http://localhost:5009` | `https://api.mastipe.in` |
+| API origin | `http://localhost:5009` | `https://api.mastipe.in` (server listens on **5006**) |
 | Marketing site | `.env` (proxied) | `.env.production` → `https://mastipe.in` |
 | Admin panel | `.env` (proxied) | `.env.production` → `https://admin.mastipe.in` |
 
@@ -66,7 +66,8 @@ if it is non-empty, because this failure is invisible from the outside.
 
 - `mastipe.in` → the marketing site build (`dist/`)
 - `admin.mastipe.in` → the admin panel build (`dist/`)
-- `api.mastipe.in` → this server on port 5009, behind TLS
+- `api.mastipe.in` → this server on port 5006, behind TLS (`PORT` in `.env.prod`;
+  development still uses 5009, so the reverse proxy must name 5006 explicitly)
 
 Webhook URL to paste into the Meta dashboard:
 
