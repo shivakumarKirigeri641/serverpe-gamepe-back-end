@@ -1,5 +1,5 @@
 import { query, queryOne } from '../db/pool.js';
-import { env } from '../config/env.js';
+import { env, trialEnd } from '../config/env.js';
 import { appDate } from '../utils/time.js';
 
 /**
@@ -44,7 +44,7 @@ export interface TrialSummary {
 }
 
 export async function getTrialSummary(): Promise<TrialSummary> {
-  const end = new Date(env.FREE_TRIAL_ENDS_AT);
+  const end = trialEnd();
   const now = new Date();
   const msPerDay = 86_400_000;
 
@@ -90,7 +90,7 @@ export async function getTrialSummary(): Promise<TrialSummary> {
   const daysRemaining = Math.max(Math.ceil((end.getTime() - now.getTime()) / msPerDay), 0);
 
   return {
-    endsAt: env.FREE_TRIAL_ENDS_AT,
+    endsAt: trialEnd().toISOString(),
     endsOn: appDate(end),
     daysRemaining,
     daysElapsed: Math.max(

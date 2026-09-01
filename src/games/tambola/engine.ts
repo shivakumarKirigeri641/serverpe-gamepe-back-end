@@ -1,3 +1,4 @@
+import { env } from '../../config/env.js';
 import type {
   ClaimContext,
   ClaimDefinition,
@@ -44,7 +45,11 @@ export class TambolaEngine implements GameEngine<TambolaState, TambolaEntryPaylo
   readonly displayName = 'Tambola';
   readonly description = 'Classic housie — 90 numbers, 3x9 tickets, six prizes.';
   readonly minPlayers = 1;
-  readonly maxPlayers = 200;
+  // The engine itself has no upper bound — ninety numbers and a ticket each
+  // work for any number of people. The real limit is how fast a called number
+  // can reach everybody, so it lives in configuration (MAX_PLAYERS_PER_GAME)
+  // and is measured against the fan-out rather than asserted here.
+  readonly maxPlayers = env.MAX_PLAYERS_PER_GAME;
   readonly maxEntriesPerPlayer = 6;
   readonly entryNoun = 'ticket';
 

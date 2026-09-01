@@ -1,5 +1,6 @@
 import express, { type Express, type Request, type Response } from 'express';
-import { apiPath, env, trialEndLabel } from '../config/env.js';
+import { apiPath, env, trialEnd, trialEndLabel } from '../config/env.js';
+import { listTestimonials } from '../services/feedback.service.js';
 import { logger } from '../utils/logger.js';
 import { pool } from '../db/pool.js';
 import { markMessageSeen, redis } from '../redis/client.js';
@@ -423,16 +424,17 @@ export function createServer(): Express {
         return;
       }
       // The trial's end date travels with the company details so the website
-      // can print it. It lives in FREE_TRIAL_ENDS_AT and nowhere else: a date
-      // typed into the marketing copy goes stale the moment the trial moves,
-      // and the site would then promise a deadline the product does not keep.
-      const trialEnd = new Date(env.FREE_TRIAL_ENDS_AT);
-      const trial = Number.isNaN(trialEnd.getTime())
+      // can print it. It has one source — the admin panel's setting, falling
+      // back to FREE_TRIAL_ENDS_AT — because a date typed into marketing copy
+      // goes stale the moment the trial moves, and the site would then promise
+      // a deadline the product does not keep.
+      const end = trialEnd();
+      const trial = Number.isNaN(end.getTime())
         ? null
         : {
-            endsAt: trialEnd.toISOString(),
+            endsAt: end.toISOString(),
             label: trialEndLabel(),
-            over: new Date() > trialEnd,
+            over: new Date() > end,
           };
 
       res
@@ -441,6 +443,21 @@ export function createServer(): Express {
         .json({ data: { ...profile, trial } });
     } catch (err) {
       logger.error({ err }, 'failed to read business profile');
+      res.status(500).json({ error: 'Internal error' });
+    }
+  });
+
+  // Public: testimonials — the feedback an operator has explicitly approved.
+  // Nothing here identifies a player beyond the first name that was approved
+  // with it, and an un-approved comment can never reach this endpoint.
+  app.get(apiPath('/public/testimonials'), async (_req: Request, res: Response) => {
+    try {
+      res
+        .set('Cache-Control', 'public, max-age=300')
+        .set('Access-Control-Allow-Origin', '*')
+        .json({ data: await listTestimonials(12) });
+    } catch (err) {
+      logger.error({ err }, 'failed to read testimonials');
       res.status(500).json({ error: 'Internal error' });
     }
   });
@@ -474,6 +491,9 @@ export function createServer(): Express {
             price: p.is_selectable ? formatPrice(p, lang) : formatListPrice(p, lang),
             listPrice: formatListPrice(p, lang),
             pricePaise: p.price_paise,
+            // Both ends of the band: the price list reads "11-25 players",
+            // which cannot be built from the upper bound alone.
+            minPlayers: p.min_players,
             maxPlayers: p.max_players,
             available: p.is_selectable,
           })),

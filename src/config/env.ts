@@ -2,20 +2,18 @@ import { config as loadEnv } from 'dotenv';
 import { z } from 'zod';
 
 /**
- * Which .env file this process reads.
+ * Configuration comes from `.env`, and only `.env`.
  *
- * Two files, one per environment: `.env` for a laptop, `.env.prod` for the
- * server. Picked explicitly rather than by convention so it is never ambiguous
- * which one is live — a production process that silently fell back to a
- * development file would point at a local database and a test WhatsApp number,
- * and nothing would look wrong until a real player messaged.
+ * One file per machine, holding that machine's values: development on a laptop,
+ * production on the server. This is the ordinary convention, and its virtue is
+ * that there is nothing to select — no flag to forget and no second file that
+ * might be the one actually in force.
  *
- * Precedence: variables already in the environment win. That is what lets
- * `node --env-file=.env.prod` (see the start:prod script) and a container's own
- * variables override the file without editing it.
+ * Precedence: variables already in the environment win, so a container, a
+ * systemd unit or a one-off `VAR=x npm start` can override the file without
+ * editing it.
  */
-const ENV_FILE =
-  process.env['ENV_FILE'] ?? (process.env['NODE_ENV'] === 'production' ? '.env.prod' : '.env');
+const ENV_FILE = '.env';
 
 loadEnv({ path: ENV_FILE });
 
@@ -28,6 +26,10 @@ const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(5009),
   LOG_LEVEL: z.string().default('info'),
+  // Human-readable log lines instead of JSON. Defaults to on in development.
+  // Worth turning on in production too while watching a launch: JSON is for
+  // machines, and nobody reads a launch through a JSON parser.
+  LOG_PRETTY: z.string().optional(),
 
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
@@ -187,7 +189,23 @@ const schema = z.object({
    */
   EARLY_ADVANCE_DELAY_MS: z.coerce.number().int().min(0).max(5000).default(300),
 
-  DRAW_INTERVAL_SECONDS: z.coerce.number().int().min(1).max(120).default(20),
+  // How many draw messages are in flight at once. One at a time cannot fill a
+  // room of fifty inside a twenty-second interval; all at once trips the Cloud
+  // API's throughput limits. Eight is measured, not guessed — see round.service.
+  DRAW_FANOUT_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(8),
+  // The largest room the platform will accept, whatever a plan says. The limit
+  // is delivery capacity, not the game: a room bigger than the fan-out can
+  // serve inside one interval falls behind and never catches up.
+  MAX_PLAYERS_PER_GAME: z.coerce.number().int().min(2).max(1000).default(50),
+  // The floor between numbers. However fast the room answers, nobody gets the
+  // next number sooner than this — a caller who never draws breath is stressful
+  // rather than exciting, and the last player served needs a moment to look.
+  DRAW_MIN_GAP_SECONDS: z.coerce.number().int().min(2).max(60).default(5),
+  // The share of the room that has to answer before the next number comes
+  // early. Not everyone: one person putting their phone down should not hold
+  // up nine who are watching.
+  DRAW_QUORUM_PERCENT: z.coerce.number().int().min(10).max(100).default(70),
+  DRAW_INTERVAL_SECONDS: z.coerce.number().int().min(1).max(120).default(12),
 
   /* ----------------------------------------------------------- payments */
 
@@ -268,7 +286,7 @@ export const env = parsed.data;
 /**
  * Refuses to start production with a placeholder still in place.
  *
- * .env.prod ships with CHANGE_ME against every secret. A server that boots
+ * .env ships with CHANGE_ME against every secret. A server that boots
  * anyway would run with a known admin passcode and a signing key printed in the
  * repository — and nothing would look wrong until somebody found it. Failing at
  * boot is loud, immediate, and happens before a single player is exposed.
@@ -313,8 +331,27 @@ if (env.NODE_ENV === 'production') {
  * Derived from FREE_TRIAL_ENDS_AT so the date lives in one place; hard-coding
  * it into greetings is how copy and behaviour drift apart.
  */
+/**
+ * The trial's end date, as an instant.
+ *
+ * FREE_TRIAL_ENDS_AT is the default, not the authority: an operator can move
+ * the date from the admin panel, and that choice is held here so every sync
+ * caller — greetings, plan taglines, the charging switch — sees the same answer
+ * without any of them learning about the database.
+ */
+let trialEndOverride: Date | null = null;
+
+/** Called by the settings service at boot and whenever the date is changed. */
+export function setTrialEndOverride(date: Date | null): void {
+  trialEndOverride = date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+export function trialEnd(): Date {
+  return trialEndOverride ?? new Date(env.FREE_TRIAL_ENDS_AT);
+}
+
 export function trialEndLabel(lang: 'en' | 'hi' = 'en'): string {
-  const end = new Date(env.FREE_TRIAL_ENDS_AT);
+  const end = trialEnd();
   if (Number.isNaN(end.getTime())) return '';
   // "6 सितंबर" on the Hindi site: a Hindi sentence with an English month name
   // in the middle of it reads as a half-finished translation.
@@ -334,7 +371,7 @@ export function apiPath(relative: string): string {
 
 export function isChargingEnabled(now: Date = new Date()): boolean {
   if (!env.MONETIZATION_ENABLED) return false;
-  const trialEnd = new Date(env.FREE_TRIAL_ENDS_AT);
-  if (Number.isNaN(trialEnd.getTime())) return true;
-  return now > trialEnd;
+  const end = trialEnd();
+  if (Number.isNaN(end.getTime())) return true;
+  return now > end;
 }

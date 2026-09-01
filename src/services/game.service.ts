@@ -5,6 +5,7 @@ import { getEngine } from '../core/registry.js';
 import type { ClaimOutcome, Entry } from '../core/types.js';
 import { generateRoomCode } from '../utils/ids.js';
 import { logger } from '../utils/logger.js';
+import { activity } from '../utils/activity.js';
 import {
   consumeFreeGame,
   getFreeGames,
@@ -204,7 +205,13 @@ export async function createGame(opts: CreateGameOptions): Promise<GameRow> {
           opts.planPricePaise ?? 0,
         ],
       );
-      if (row) return row;
+      if (row) {
+        activity('game.created', `room ${row.room_code} by host, ${opts.expectedPlayers ?? '?'} expected`, {
+          gameId: row.id,
+          roomCode: row.room_code,
+        });
+        return row;
+      }
     } catch (err) {
       if ((err as { code?: string }).code !== '23505') throw err;
       logger.warn({ attempt }, 'room code collision, retrying');
@@ -452,6 +459,11 @@ export async function startGame(gameId: string, byPlayerId: string): Promise<Gam
       client,
     );
     if (!updated) throw new GameError('Could not start the game.');
+    activity('game.started', `room ${updated.room_code} with ${members} players`, {
+      gameId: updated.id,
+      roomCode: updated.room_code,
+      players: members,
+    });
     return updated;
   });
 }
@@ -460,10 +472,16 @@ export async function endGame(
   gameId: string,
   status: 'completed' | 'cancelled' = 'completed',
 ): Promise<void> {
-  await query('UPDATE games SET status = $2, ended_at = now() WHERE id = $1 AND ended_at IS NULL', [
-    gameId,
-    status,
-  ]);
+  const ended = await queryOne<{ room_code: string }>(
+    `UPDATE games SET status = $2, ended_at = now()
+      WHERE id = $1 AND ended_at IS NULL
+      RETURNING room_code`,
+    [gameId, status],
+  );
+
+  // Only when this call is the one that ended it — endGame is idempotent, and a
+  // second line would suggest a game ended twice.
+  if (ended) activity('game.ended', `room ${ended.room_code} ${status}`, { gameId, status });
 }
 
 /* --------------------------------------------------------------------- draw */
@@ -639,6 +657,36 @@ export async function recordDrawResponse(
 }
 
 /** True once every seated player has answered the current number. */
+/**
+ * How the room is answering one number: who has replied, out of how many, and
+ * how long ago the number went out.
+ *
+ * Waiting for *everybody* is what made a lively room feel slow — one person who
+ * put their phone down held up nine who were watching. The pace should follow
+ * the room, so the caller needs the shape of the response, not a yes/no.
+ */
+export async function drawProgress(
+  gameId: string,
+  seq: number,
+): Promise<{ responded: number; players: number; ageMs: number }> {
+  const row = await queryOne<{ responded: string; players: string; age_ms: string }>(
+    `SELECT
+       (SELECT count(*) FROM game_draw_responses r
+         WHERE r.game_id = $1 AND r.seq = $2)::text AS responded,
+       (SELECT count(*) FROM game_players gp
+         WHERE gp.game_id = $1 AND gp.left_at IS NULL)::text AS players,
+       COALESCE((SELECT round(extract(epoch FROM (now() - d.drawn_at)) * 1000)
+                   FROM game_draws d WHERE d.game_id = $1 AND d.seq = $2), 0)::text AS age_ms`,
+    [gameId, seq],
+  );
+
+  return {
+    responded: Number(row?.responded ?? 0),
+    players: Number(row?.players ?? 0),
+    ageMs: Number(row?.age_ms ?? 0),
+  };
+}
+
 export async function allPlayersResponded(gameId: string, seq: number): Promise<boolean> {
   const row = await queryOne<{ pending: string }>(
     `SELECT count(*)::text AS pending
@@ -739,6 +787,11 @@ export async function submitClaim(gameId: string, playerId: string, claimType: s
         [game.id, playerId, claimType, 'reason' in failure ? failure.reason : null, drawSeq],
         client,
       );
+      activity('game.claim', `room ${game.room_code} ${claimType} REJECTED`, {
+        gameId: game.id,
+        claimType,
+        playerId,
+      });
       return { outcome: failure, prizePaise: 0, gameFinished: false };
     }
 
@@ -777,6 +830,12 @@ export async function submitClaim(gameId: string, playerId: string, claimType: s
         client,
       );
     }
+
+    activity('game.claim', `room ${game.room_code} ${claimType} AWARDED`, {
+      gameId: game.id,
+      claimType,
+      playerId,
+    });
 
     const nowAwarded = [...awarded, claimType];
     const gameFinished = engine.isFinished(game.state as never, nowAwarded);

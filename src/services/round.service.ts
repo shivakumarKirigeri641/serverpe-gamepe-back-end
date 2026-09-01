@@ -2,6 +2,7 @@ import { env } from '../config/env.js';
 import { getEngine } from '../core/registry.js';
 import type { Entry } from '../core/types.js';
 import { logger } from '../utils/logger.js';
+import { activity } from '../utils/activity.js';
 import { boardUrl } from '../http/board-token.js';
 import {
   isFlowConfigured,
@@ -16,7 +17,7 @@ import {
 } from '../whatsapp/client.js';
 import { cancelScheduledDraw, scheduleDraw } from '../workers/queue.js';
 import {
-  allPlayersResponded,
+  drawProgress,
   countRecentResponses,
   endGame,
   findGameById,
@@ -247,6 +248,33 @@ function sendAckButtons(
  * Draws the next number for a game and pushes it to every seated player, then
  * arms the timeout for the following number.
  */
+/**
+ * Runs `task` over `items` with at most `size` in flight at any moment.
+ *
+ * A worker-pool rather than fixed chunks: with chunks, one slow send holds up
+ * everybody in its group, and WhatsApp sends are exactly the kind of work whose
+ * tail is much slower than its median.
+ */
+async function inBatches<T>(
+  items: readonly T[],
+  size: number,
+  task: (item: T) => Promise<void>,
+): Promise<void> {
+  const limit = Math.max(1, Math.min(size, items.length));
+  let next = 0;
+
+  const workers = Array.from({ length: limit }, async () => {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      await task(items[index] as T);
+    }
+  });
+
+  await Promise.all(workers);
+}
+
 export async function runDrawTick(gameId: string, expectedSeq: number): Promise<void> {
   // Before spending another number on the room, check anyone is still there.
   if (await isAbandoned(gameId, expectedSeq)) {
@@ -276,6 +304,13 @@ export async function runDrawTick(gameId: string, expectedSeq: number): Promise<
     game.config as never,
   );
 
+  activity(
+    'game.draw',
+    `room ${game.room_code} #${outcome.seq} called ${outcome.value} ` +
+      `(${drawn.length}/90) → ${members.length} players`,
+    { gameId: game.id, seq: outcome.seq, value: outcome.value },
+  );
+
   const fanOutStartedAt = Date.now();
 
   await track({
@@ -291,9 +326,33 @@ export async function runDrawTick(gameId: string, expectedSeq: number): Promise<
     },
   });
 
-  // Sequential rather than parallel: keeps us inside the Cloud API's
-  // per-second throughput and preserves a sane ordering per recipient.
-  for (const member of members) {
+  // A few sends in flight at once, not one at a time and not all at once.
+  //
+  // Measured against a real game, a single send costs about 850ms end to end.
+  // Sequentially that is 42 seconds to reach fifty people — twice the draw
+  // interval, so the game would fall further behind with every number and
+  // players would hear "45" while the caller had moved on to 61. All at once
+  // is the opposite failure: fifty simultaneous requests trip the Cloud API's
+  // throughput limits and get us rate-limited for everyone.
+  //
+  // Ordering across players does not matter — each player receives exactly one
+  // message per number — so the only thing to preserve is that a player's own
+  // messages stay in order, and each player is touched once here.
+  // Take turns being first.
+  //
+  // Members come back in join order, so without this the last person to join is
+  // last on every single number for the whole game — a permanent handicap of
+  // however long the fan-out takes. Prizes are races decided by the first valid
+  // claim, so that is a real disadvantage, not a cosmetic one.
+  //
+  // Rotating by the draw number rather than shuffling: it is deterministic
+  // (a replayed draw fans out identically), it costs nothing, and it gives
+  // every player an exactly equal share of the first position rather than a
+  // merely probable one.
+  const start = members.length > 0 ? outcome.seq % members.length : 0;
+  const order = [...members.slice(start), ...members.slice(0, start)];
+
+  await inBatches(order, env.DRAW_FANOUT_CONCURRENCY, async (member) => {
     try {
       await runWithContext({ playerId: member.player_id, gameId: game.id, drawSeq: outcome.seq }, () =>
         sendDrawToPlayer(game, member, outcome.value as number, outcome.seq, drawn, awarded, callText),
@@ -301,9 +360,20 @@ export async function runDrawTick(gameId: string, expectedSeq: number): Promise<
     } catch (err) {
       logger.error({ err, waId: member.wa_id }, 'failed to deliver draw');
     }
-  }
+  });
 
-  logger.debug({ gameId, seq: outcome.seq, fanOutMs: Date.now() - fanOutStartedAt }, 'draw fanned out');
+  const fanOutMs = Date.now() - fanOutStartedAt;
+  logger.debug({ gameId, seq: outcome.seq, fanOutMs }, 'draw fanned out');
+
+  // The number that decides how many players a room can hold. If it approaches
+  // the draw interval the game is about to start slipping, and that is worth
+  // saying out loud rather than leaving in a debug line nobody reads.
+  if (fanOutMs > env.DRAW_INTERVAL_SECONDS * 1000 * 0.7) {
+    logger.warn(
+      { gameId, seq: outcome.seq, fanOutMs, players: members.length },
+      'draw fan-out is approaching the draw interval — the room may be too large',
+    );
+  }
 
   if (outcome.finished) {
     await concludeGame(gameId);
@@ -369,20 +439,34 @@ export async function abandonGame(gameId: string, reason: 'inactivity' | 'empty'
  * remaining wait short and move to the next number.
  */
 export async function maybeAdvanceEarly(gameId: string, seq: number): Promise<void> {
-  if (!(await allPlayersResponded(gameId, seq))) return;
+  const { responded, players, ageMs } = await drawProgress(gameId, seq);
+  if (players === 0) return;
+
+  // The room sets the pace. Twenty seconds is the *ceiling* — what happens when
+  // a room goes quiet — and a room that is watching should not be held to it:
+  // people leave a game that feels like waiting. So the next number comes as
+  // soon as most of the room has answered, subject to a floor.
+  //
+  // A quorum rather than everybody, because one person who set their phone down
+  // should not stall nine who are playing. A floor rather than instantly,
+  // because a number arriving the moment the last tap lands reads as a glitch,
+  // and the players served last in the fan-out need a beat to look at their
+  // ticket at all.
+  const needed = Math.max(1, Math.ceil((players * env.DRAW_QUORUM_PERCENT) / 100));
+  if (responded < needed) return;
+
+  const floorMs = env.DRAW_MIN_GAP_SECONDS * 1000;
+  const waitMs = Math.max(env.EARLY_ADVANCE_DELAY_MS, floorMs - ageMs);
 
   await track({
     type: EVENT.GAME_TICK_EARLY_ADVANCE,
     source: 'whatsapp',
     gameId,
-    properties: { seq },
+    properties: { seq, responded, players, waitMs },
   });
 
   await cancelScheduledDraw(gameId, seq);
-
-  // A short beat rather than zero: the last tap and the next number arriving
-  // together looks like a glitch, and nobody sees "everyone has answered".
-  await scheduleDraw(gameId, seq, env.EARLY_ADVANCE_DELAY_MS);
+  await scheduleDraw(gameId, seq, waitMs);
 }
 
 /* --------------------------------------------------------------- conclusion */

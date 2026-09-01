@@ -1,5 +1,8 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
+import { countHosts, getGameTimeline, getHostDetail, listHosts } from '../services/hosts.service.js';
+import { approveFeedback, unapproveFeedback } from '../services/feedback.service.js';
+import { clearTrialEndsAt, getSettings, setTrialEndsAt } from '../services/settings.service.js';
 import { logger } from '../utils/logger.js';
 import { env } from '../config/env.js';
 import { queryOne } from '../db/pool.js';
@@ -1026,6 +1029,109 @@ export function createAdminRouter(): Router {
   router.get(
     '/trial',
     handle(async () => getTrialSummary()),
+  );
+
+  // Publishing a player's words is an explicit act, recorded with who did it.
+  router.put(
+    '/feedback/:id/approve',
+    handle(async (req) => {
+      const id = uuidString.parse(req.params['id']);
+      const { displayAs } = z
+        .object({ displayAs: z.string().max(40).nullable().optional() })
+        .parse(req.body ?? {});
+
+      await track({
+        type: EVENT.ADMIN_REQUEST,
+        source: 'admin',
+        adminActor: req.adminActor ?? null,
+        requestIp: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+        properties: { action: 'feedback.approve', id },
+      });
+
+      return approveFeedback(id, req.adminActor ?? 'admin', displayAs ?? null);
+    }),
+  );
+
+  router.put(
+    '/feedback/:id/unapprove',
+    handle(async (req) => {
+      const id = uuidString.parse(req.params['id']);
+
+      await track({
+        type: EVENT.ADMIN_REQUEST,
+        source: 'admin',
+        adminActor: req.adminActor ?? null,
+        requestIp: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+        properties: { action: 'feedback.unapprove', id },
+      });
+
+      await unapproveFeedback(id);
+      return { ok: true };
+    }),
+  );
+
+  /* ----------------------------------------------------------- hosts */
+
+  // Hosts are not a separate account type — anybody who opens a room is one —
+  // so this is a view over players and games rather than its own table.
+  router.get(
+    '/hosts',
+    handle(async (req) => {
+      const { limit, offset } = pageQuery.parse(req.query);
+      const search = z.string().max(64).optional().parse(req.query['search']);
+      const [hosts, total] = await Promise.all([
+        listHosts(limit, offset, search),
+        countHosts(search),
+      ]);
+      return { hosts, total };
+    }),
+  );
+
+  router.get(
+    '/hosts/:id',
+    handle(async (req) => getHostDetail(uuidString.parse(req.params['id']))),
+  );
+
+  // Every number called, claim made and player joined, in order — so a
+  // disputed game can be reconstructed rather than argued about.
+  router.get(
+    '/games/:id/timeline',
+    handle(async (req) => {
+      const id = uuidString.parse(req.params['id']);
+      const { limit } = pageQuery.parse(req.query);
+      return getGameTimeline(id, limit);
+    }),
+  );
+
+  /* -------------------------------------------------------- settings */
+
+  router.get('/settings', handle(async () => getSettings()));
+
+  // Moving the trial takes effect on the running process, so the website, the
+  // plan taglines and the charging switch all change together on save.
+  router.put(
+    '/settings/trial',
+    handle(async (req) => {
+      const input = z
+        .object({ endsAt: z.string().min(4).nullable() })
+        .parse(req.body ?? {});
+
+      await track({
+        type: EVENT.ADMIN_REQUEST,
+        source: 'admin',
+        adminActor: req.adminActor ?? null,
+        requestIp: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+        properties: { action: 'settings.trial', endsAt: input.endsAt },
+      });
+
+      if (input.endsAt === null) await clearTrialEndsAt();
+      else await setTrialEndsAt(new Date(input.endsAt), req.adminActor ?? 'admin');
+
+      return getSettings();
+    }),
   );
 
   /* -------------------------------------------------------- documents */

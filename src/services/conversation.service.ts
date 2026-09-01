@@ -1,4 +1,5 @@
 import { env, isChargingEnabled, trialEndLabel } from '../config/env.js';
+import { activity, maskWaId, preview } from '../utils/activity.js';
 import { getEngine, listEngines } from '../core/registry.js';
 import type { Entry } from '../core/types.js';
 import { redis } from '../redis/client.js';
@@ -1242,6 +1243,13 @@ export async function handleInbound(event: InboundEvent): Promise<void> {
 
   const activeGame = await findActiveGameForPlayer(player.id);
   await logInbound(event, player.id, activeGame?.id ?? null);
+
+  activity(
+    'msg.in',
+    `${maskWaId(player.wa_id)} ${player.is_new ? '(new) ' : ''}"${preview(event.text)}"` +
+      (activeGame ? ` [room ${activeGame.room_code}]` : ''),
+    { playerId: player.id, gameId: activeGame?.id ?? null },
+  );
 
   await track({
     type: player.is_new ? EVENT.PLAYER_CREATED : EVENT.PLAYER_RETURNED,

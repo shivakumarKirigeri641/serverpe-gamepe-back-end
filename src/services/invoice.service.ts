@@ -3,7 +3,7 @@ import { query, queryOne } from '../db/pool.js';
 import { env } from '../config/env.js';
 import { appTimeString } from '../utils/time.js';
 import { storeDocument } from './document.service.js';
-import { fontForText, useFonts } from './report-fonts.js';
+import { drawFooter, fontForText, useFonts } from './report-fonts.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -276,13 +276,12 @@ export async function buildInvoice(paymentId: string): Promise<{
     y = doc.y + 3;
   }
 
-  doc.fontSize(8).fillColor(COLOR.muted)
-    .text(
-      `${biz?.['legal_name'] ?? 'ServerPe App Solutions'} · ${biz?.['city'] ?? ''} · ${biz?.['gstin'] ?? ''}`,
-      40,
-      800,
-      { width: 515, align: 'center' },
-    );
+  drawFooter(
+    doc,
+    `${biz?.['legal_name'] ?? 'ServerPe App Solutions'} · ${biz?.['city'] ?? ''} · ${biz?.['gstin'] ?? ''}`,
+    F.regular,
+    COLOR.muted,
+  );
 
   doc.end();
   await done;

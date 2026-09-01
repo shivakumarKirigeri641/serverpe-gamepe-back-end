@@ -1,5 +1,5 @@
 import { query, queryOne } from '../db/pool.js';
-import { env } from '../config/env.js';
+import { env, trialEnd } from '../config/env.js';
 import { splitGst } from './payment.service.js';
 
 /**
@@ -126,7 +126,7 @@ export async function priceForPlayers(players: number): Promise<PricingForRoom> 
  * offered — which is why this is asked here rather than assumed by the caller.
  */
 export function isChargingLive(): boolean {
-  const trialOver = new Date() > new Date(env.FREE_TRIAL_ENDS_AT);
+  const trialOver = new Date() > trialEnd();
   return env.MONETIZATION_ENABLED && env.PAYMENTS_ENABLED && trialOver;
 }
 
