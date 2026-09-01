@@ -385,6 +385,10 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
     capClaim: hi
       ? 'मीरा की बीच वाली लाइन पूरी। उन्होंने दावा किया — बॉट ने जाँचा और सबको बता दिया।'
       : "Meera's middle row is complete. She claims it, the bot checks it and tells everybody.",
+    watchVideo: hi ? 'पूरा खेल, तीन मिनट में' : 'A whole game, in three minutes',
+    watchVideoSub: hi
+      ? 'चार फ़ोन एक साथ — रूम खुलने से लेकर इनाम जीतने तक। पूरा वीडियो देखिए: आखिर में हर इनाम और उसका दावा कैसे करना है, यह समझाया गया है।'
+      : 'Four phones at once, from opening a room to winning a prize. Watch the whole thing — the six prizes and how to claim them are explained at the end.',
     marked: hi ? 'कट गए' : 'marked',
     called: hi ? 'बोले गए' : 'called',
   };
@@ -581,6 +585,8 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
   .mini.anyfive i:nth-child(12), .mini.anyfive i:nth-child(19),
   .mini.anyfive i:nth-child(23) { background: ${COLOR.gold}; }
 
+  .film { display: block; width: calc(100% - 28px); margin: 4px 14px 16px; border-radius: 12px;
+          background: #000; aspect-ratio: 16 / 9; }
   .cta { display: block; text-align: center; padding: 15px; border-radius: 13px;
          background: #25d366; color: #fff; text-decoration: none; font-weight: 800; font-size: 16px; }
   footer { text-align: center; color: ${COLOR.muted}; font-size: 11.5px; margin-top: 16px; }
@@ -595,6 +601,22 @@ export function renderDemoPage(lang: 'en' | 'hi' = 'en'): string {
 </header>
 
 <p class="ent">${escapeHtml(t.ent)}</p>
+
+<div class="card">
+  <h2>${escapeHtml(t.watchVideo)}</h2>
+  <p class="lede">${escapeHtml(t.watchVideoSub)}</p>
+  <!-- preload="none" with a poster: the page is opened from a chat, often on
+       mobile data, and four megabytes nobody asked for is rude. The cover
+       image is what they see until they press play. -->
+  <video
+    class="film"
+    controls
+    playsinline
+    preload="none"
+    poster="${apiPath(`/public/media/mastipe-demo${hi ? '-hi' : ''}-cover.png`)}"
+    src="${apiPath(`/public/media/mastipe-demo${hi ? '-hi' : ''}.mp4`)}"
+  ></video>
+</div>
 
 <div class="card">
   <div class="head">

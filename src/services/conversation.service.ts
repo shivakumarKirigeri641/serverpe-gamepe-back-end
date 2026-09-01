@@ -74,7 +74,11 @@ type Pending =
   | { awaiting: 'room_code' }
   | { awaiting: 'consent'; intent: 'play' | 'join'; gameKey?: string; roomCode?: string }
   | { awaiting: 'player_count'; gameKey: string }
-  | { awaiting: 'plan'; gameKey: string; players: number };
+  | { awaiting: 'plan'; gameKey: string; players: number }
+  // Set while a first-time player decides whether to watch the demo, so that
+  // whatever the offer interrupted — a join, a room being set up — is picked
+  // up again afterwards rather than dropped at the main menu.
+  | { awaiting: 'after_demo'; intent?: 'play' | 'join'; gameKey?: string; roomCode?: string };
 
 /**
  * Every word the router acts on, including the wording used on template
@@ -88,7 +92,7 @@ const KNOWN_COMMANDS = new Set([
   'play', 'new', 'play now', 'start playing',
   'start free trial', 'start free trail', 'free trial', 'free trail',
   'join',
-  'help', 'how to play', 'how it works', 'demo',
+  'help', 'how to play', 'how it works', 'demo', 'demoen', 'demohi', 'skipdemo',
   'stats', 'board', 'leaderboard', 'top players',
   'balance', 'credits', 'wallet', 'my credits', 'check balance',
   'terms', 'privacy', 'legal',
@@ -180,7 +184,7 @@ async function sendMoreOptions(player: PlayerRow): Promise<void> {
     { id: 'cmd:stats', title: 'My stats', description: 'Full report as a PDF' },
     { id: 'cmd:balance', title: 'My credits', description: 'Wallet balance and recent movements' },
     { id: 'cmd:board', title: 'Leaderboard', description: 'Top players this week' },
-    { id: 'cmd:demo', title: 'How to play', description: 'Watch a round and see what each prize means' },
+    { id: 'cmd:demo', title: 'How to play', description: 'Two-minute video — English or हिंदी' },
     { id: 'cmd:terms', title: 'Policies & terms', description: 'What you agreed to when you joined' },
     ...(env.PROMO_URL
       ? [{ id: 'cmd:quizpe', title: 'Try QuizPe', description: env.PROMO_TEXT.slice(0, 72) }]
@@ -766,6 +770,41 @@ async function handleLegalAction(player: PlayerRow, rest: string[]): Promise<voi
 
     await sendText(player.wa_id, `✅ Thank you. Accepted on ${appTimeString()}.`);
 
+    // Offered once, to somebody who has just agreed to the terms and has never
+    // played: this is the one moment they are certain to be new, and two
+    // minutes of watching saves them working the game out mid-round while
+    // three friends wait. Skipping is a button, not a thing to type, and the
+    // answer resumes exactly what they were doing.
+    if (accepted.length > 0 && demoUrl()) {
+      await sendButtons(
+        player.wa_id,
+        [
+          '*First time here?*',
+          '',
+          'Watch a whole game in three minutes before you start — how a room',
+          'opens, how numbers are called, and what the prizes mean.',
+          '',
+          '_Watch to the end: claiming a prize is the part people miss, and it_',
+          '_is explained after the game._',
+        ].join('\n'),
+        [
+          { id: 'cmd:demoen', title: 'Watch (English)' },
+          { id: 'cmd:demohi', title: 'देखें (हिंदी)' },
+          { id: 'cmd:skipdemo', title: 'Skip, let us play' },
+        ],
+      );
+
+      // Where to go once they have answered, so the demo does not lose their
+      // place in a join or a room they were part way through setting up.
+      await setPending(player.wa_id, {
+        awaiting: 'after_demo',
+        intent: resume?.awaiting === 'consent' ? resume.intent : undefined,
+        roomCode: resume?.awaiting === 'consent' ? resume.roomCode : undefined,
+        gameKey: resume?.awaiting === 'consent' ? resume.gameKey : undefined,
+      });
+      return;
+    }
+
     if (resume?.awaiting === 'consent') {
       if (resume.intent === 'join') {
         return resume.roomCode ? handleJoin(player, resume.roomCode, true) : startJoinPrompt(player);
@@ -774,6 +813,28 @@ async function handleLegalAction(player: PlayerRow, rest: string[]): Promise<voi
     }
     return sendMainMenu(player);
   }
+}
+
+
+/**
+ * Picks up whatever the demo offer interrupted.
+ *
+ * The offer is made immediately after consent, which is also the moment a
+ * player was part way through joining a room or setting one up. Dropping them
+ * at the main menu instead would make them start again — and the friend whose
+ * link they tapped would be left waiting.
+ */
+async function resumeAfterDemo(player: PlayerRow): Promise<void> {
+  const pending = await takePending(player.wa_id);
+  if (pending?.awaiting !== 'after_demo') return sendMainMenu(player);
+
+  if (pending.intent === 'join') {
+    return pending.roomCode ? handleJoin(player, pending.roomCode, true) : startJoinPrompt(player);
+  }
+  if (pending.intent === 'play') {
+    return sendPlayerCountPrompt(player, pending.gameKey ?? DEFAULT_GAME, true);
+  }
+  return sendMainMenu(player);
 }
 
 /* ------------------------------------------------------------------ actions */
@@ -1664,26 +1725,65 @@ async function handleText(player: PlayerRow, rawText: string): Promise<void> {
     case 'demo':
     case 'how to play':
     case 'how it works': {
-      const url = demoUrl();
-      if (!url) return sendHelp(player);
+      if (!demoUrl()) return sendHelp(player);
 
-      // A page rather than a wall of text. Tambola is obvious once you have
-      // seen a round and opaque until then, and nobody reads instructions on a
-      // phone — they watch a ticket fill in and understand it at once.
-      await sendCtaUrl(
+      // Asking the language rather than guessing it. The chat itself is
+      // English for everybody, so nothing before this point reveals which
+      // language a player reads — and sending a Hindi speaker to an English
+      // page, or the reverse, is worse than one extra tap.
+      await sendButtons(
         player.wa_id,
         [
           `*How to play ${env.BRAND_NAME}*`,
           '',
-          'Watch a round play out, then see what each of the six prizes means —',
-          'with the winning squares shown on a real ticket.',
+          'A whole game in three minutes. Watch it to the end — the six prizes',
+          'and how to claim one are explained after the game finishes.',
+          '',
+          'Which language would you like?',
         ].join('\n'),
-        'Watch the demo',
-        url,
-        { playerId: player.id },
-        'Takes a minute',
+        [
+          { id: 'cmd:demoen', title: 'English' },
+          { id: 'cmd:demohi', title: 'हिंदी' },
+        ],
       );
       return;
+    }
+
+    case 'skipdemo':
+      return resumeAfterDemo(player);
+
+    case 'demoen':
+    case 'demohi': {
+      const hindi = text === 'demohi';
+      const url = demoUrl(hindi ? 'hi' : 'en');
+      if (!url) return sendHelp(player);
+
+      await sendCtaUrl(
+        player.wa_id,
+        hindi
+          ? [
+              '*तंबोला कैसे खेलें*',
+              '',
+              'तीन मिनट में पूरा खेल — रूम खुलने से लेकर इनाम जीतने तक।',
+              '',
+              '_पूरा वीडियो देखिए। खेल के बाद बताया गया है कि छहों इनाम क्या हैं_',
+              '_और उनका दावा कैसे किया जाता है।_',
+            ].join('\n')
+          : [
+              `*How to play ${env.BRAND_NAME}*`,
+              '',
+              'A whole game in three minutes — from opening a room to winning',
+              'a prize.',
+              '',
+              '_Watch it to the end. The six prizes and how to claim one are_',
+              '_explained after the game finishes._',
+            ].join('\n'),
+        hindi ? 'डेमो देखें' : 'Watch the demo',
+        url,
+        { playerId: player.id },
+        hindi ? 'तीन मिनट' : 'Takes three minutes',
+      );
+      return resumeAfterDemo(player);
     }
 
     case 'testpay': {

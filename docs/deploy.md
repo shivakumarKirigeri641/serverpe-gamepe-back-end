@@ -38,6 +38,22 @@ or move it off the deploy path with `UPLOADS_DIR`.
 `src/images/` and `src/assets/fonts/` are read at runtime from the working
 directory too — the deployed tree needs `src/`, not only `dist/`.
 
+## The demo films
+
+`src/media/*.mp4` is build output and is gitignored: two five-megabyte files
+that are regenerated whenever a scene is retimed, and git would keep every
+version of them forever. They do not arrive with `git pull`, so copy them once
+per change:
+
+```bash
+scp src/media/mastipe-demo.mp4 src/media/mastipe-demo-hi.mp4     root@srv:/var/www/serverpe-gamepe-back-end/src/media/
+```
+
+Without them the marketing site and the demo page show the cover image (which
+*is* committed) and the video fails to play. Re-render with
+`npx tsx scripts/make-demo-video.ts`; the soundtrack is whatever audio file
+sits in `src/assets/music/`, which is gitignored and never served.
+
 ## Running
 
 ```bash
