@@ -48,10 +48,22 @@ export function boardUrl(gameId: string, playerId: string): string | null {
   return `${origin}${apiPath('/public/board')}/${createBoardToken(gameId, playerId)}`;
 }
 
-/** Public policies page. Same for every player, so no token is needed. */
-export function policiesUrl(): string | null {
-  if (!env.PUBLIC_BASE_URL) return null;
-  return `${env.PUBLIC_BASE_URL.replace(/\/+$/, '')}${apiPath('/public/policies')}`;
+/**
+ * The policies, on the website rather than the API.
+ *
+ * A player opening this from a chat sees mastipe.in — the address on our own
+ * stationery — instead of api.mastipe.in, which is unfamiliar and is exactly
+ * the shape of link people are taught not to tap.
+ *
+ * The API's own /public/policies page still exists and still works, because
+ * links sent months ago must keep working forever.
+ */
+export function policiesUrl(docKey?: string): string | null {
+  const site = env.SITE_BASE_URL || env.PUBLIC_BASE_URL;
+  if (!site) return null;
+
+  const origin = site.replace(/\/+$/, '');
+  return docKey ? `${origin}/policies/${docKey}` : `${origin}/policies`;
 }
 
 /**

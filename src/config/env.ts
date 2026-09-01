@@ -118,6 +118,11 @@ const schema = z.object({
    * Public origin players reach this server on, used to build board links.
    * In development this is your ngrok https URL; in production, your domain.
    */
+  // Where the marketing site lives. Policy links point here, not at the API:
+  // a privacy policy served from api.<domain> reads as somebody else's
+  // document. Empty falls back to PUBLIC_BASE_URL, so a single-host setup and
+  // a local machine both keep working.
+  SITE_BASE_URL: z.string().default(''),
   PUBLIC_BASE_URL: z.string().default(''),
   /** Signing key for board links. Falls back to the WhatsApp app secret. */
   BOARD_LINK_SECRET: z.string().default(''),

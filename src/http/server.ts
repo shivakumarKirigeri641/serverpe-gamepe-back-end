@@ -168,6 +168,47 @@ export function createServer(): Express {
   // The board is a real web page opened in a browser, so it must be framed by
   // nobody but must still be reachable cross-origin from WhatsApp's launcher.
   // Public: the full policies, readable in a browser rather than chat bubbles.
+  /**
+   * The policies as data, for the website to render at mastipe.in/policies.
+   *
+   * A privacy policy that lives on api.mastipe.in reads as somebody else's
+   * document: the host is unfamiliar, it is not the address on our own
+   * stationery, and a link to an API subdomain is exactly the shape of thing
+   * people are told not to click. The words still live in the database and are
+   * still edited in the admin panel — only the address changes.
+   *
+   * The server-rendered page below stays: WhatsApp messages sent months ago
+   * link to it, and those links must keep working forever.
+   */
+  app.get(apiPath('/public/legal'), async (req: Request, res: Response) => {
+    try {
+      const lang = req.query['lang'] === 'hi' ? 'hi' : 'en';
+      const docs = await listActiveDocuments();
+
+      res
+        .set('Cache-Control', 'public, max-age=300')
+        .set('Vary', 'Accept-Language')
+        .set('Access-Control-Allow-Origin', '*')
+        .json({
+          data: docs.map((d) => ({
+            key: d.doc_key,
+            version: d.version,
+            title: (lang === 'hi' && d.title_hi) || d.title,
+            summary: (lang === 'hi' && d.summary_hi) || d.summary,
+            body: (lang === 'hi' && d.body_hi) || d.body,
+            requiresConsent: d.requires_consent,
+            // Whether the Hindi has actually been written. The page says so:
+            // English remains the operative text, and a reader deserves to
+            // know which one they are looking at.
+            translated: lang === 'hi' ? Boolean(d.body_hi) : true,
+          })),
+        });
+    } catch (err) {
+      logger.error({ err }, 'failed to read legal documents');
+      res.status(500).json({ error: 'Internal error' });
+    }
+  });
+
   app.get(apiPath('/public/policies'), async (req: Request, res: Response) => {
     try {
       // Hindi on request only. Anything other than 'hi' is English rather than
