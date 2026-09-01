@@ -20,6 +20,7 @@ export interface Plan {
   /** Null until somebody writes the Hindi; English is used until they do. */
   name_hi: string | null;
   tagline_hi: string | null;
+  min_players: number;
   description: string;
   price_paise: number;
   currency: string;
@@ -30,7 +31,7 @@ export interface Plan {
 }
 
 const PLAN_COLUMNS = `id, plan_key, name, tagline, name_hi, tagline_hi, description,
-  price_paise, currency, max_players, is_active, is_selectable, display_order`;
+  price_paise, currency, min_players, max_players, is_active, is_selectable, display_order`;
 
 export async function listActivePlans(): Promise<Plan[]> {
   return query<Plan>(

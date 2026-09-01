@@ -491,6 +491,9 @@ export function createServer(): Express {
             price: p.is_selectable ? formatPrice(p, lang) : formatListPrice(p, lang),
             listPrice: formatListPrice(p, lang),
             pricePaise: p.price_paise,
+            // Both ends of the band: the price list reads "11-25 players",
+            // which cannot be built from the upper bound alone.
+            minPlayers: p.min_players,
             maxPlayers: p.max_players,
             available: p.is_selectable,
           })),

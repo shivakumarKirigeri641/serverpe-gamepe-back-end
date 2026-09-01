@@ -657,6 +657,36 @@ export async function recordDrawResponse(
 }
 
 /** True once every seated player has answered the current number. */
+/**
+ * How the room is answering one number: who has replied, out of how many, and
+ * how long ago the number went out.
+ *
+ * Waiting for *everybody* is what made a lively room feel slow — one person who
+ * put their phone down held up nine who were watching. The pace should follow
+ * the room, so the caller needs the shape of the response, not a yes/no.
+ */
+export async function drawProgress(
+  gameId: string,
+  seq: number,
+): Promise<{ responded: number; players: number; ageMs: number }> {
+  const row = await queryOne<{ responded: string; players: string; age_ms: string }>(
+    `SELECT
+       (SELECT count(*) FROM game_draw_responses r
+         WHERE r.game_id = $1 AND r.seq = $2)::text AS responded,
+       (SELECT count(*) FROM game_players gp
+         WHERE gp.game_id = $1 AND gp.left_at IS NULL)::text AS players,
+       COALESCE((SELECT round(extract(epoch FROM (now() - d.drawn_at)) * 1000)
+                   FROM game_draws d WHERE d.game_id = $1 AND d.seq = $2), 0)::text AS age_ms`,
+    [gameId, seq],
+  );
+
+  return {
+    responded: Number(row?.responded ?? 0),
+    players: Number(row?.players ?? 0),
+    ageMs: Number(row?.age_ms ?? 0),
+  };
+}
+
 export async function allPlayersResponded(gameId: string, seq: number): Promise<boolean> {
   const row = await queryOne<{ pending: string }>(
     `SELECT count(*)::text AS pending

@@ -189,7 +189,23 @@ const schema = z.object({
    */
   EARLY_ADVANCE_DELAY_MS: z.coerce.number().int().min(0).max(5000).default(300),
 
-  DRAW_INTERVAL_SECONDS: z.coerce.number().int().min(1).max(120).default(20),
+  // How many draw messages are in flight at once. One at a time cannot fill a
+  // room of fifty inside a twenty-second interval; all at once trips the Cloud
+  // API's throughput limits. Eight is measured, not guessed — see round.service.
+  DRAW_FANOUT_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(8),
+  // The largest room the platform will accept, whatever a plan says. The limit
+  // is delivery capacity, not the game: a room bigger than the fan-out can
+  // serve inside one interval falls behind and never catches up.
+  MAX_PLAYERS_PER_GAME: z.coerce.number().int().min(2).max(1000).default(50),
+  // The floor between numbers. However fast the room answers, nobody gets the
+  // next number sooner than this — a caller who never draws breath is stressful
+  // rather than exciting, and the last player served needs a moment to look.
+  DRAW_MIN_GAP_SECONDS: z.coerce.number().int().min(2).max(60).default(5),
+  // The share of the room that has to answer before the next number comes
+  // early. Not everyone: one person putting their phone down should not hold
+  // up nine who are watching.
+  DRAW_QUORUM_PERCENT: z.coerce.number().int().min(10).max(100).default(70),
+  DRAW_INTERVAL_SECONDS: z.coerce.number().int().min(1).max(120).default(12),
 
   /* ----------------------------------------------------------- payments */
 
