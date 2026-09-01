@@ -1,4 +1,5 @@
 import express, { type Express, type Request, type Response } from 'express';
+import { join } from 'node:path';
 import { apiPath, env, trialEnd, trialEndLabel } from '../config/env.js';
 import { listTestimonials } from '../services/feedback.service.js';
 import { logger } from '../utils/logger.js';
@@ -577,6 +578,38 @@ export function createServer(): Express {
         ].join('\n'),
       );
   });
+
+  /**
+   * The demo video and its cover.
+   *
+   * Served by the back-end for the same reason the logos are: the marketing
+   * site, the WhatsApp demo page and anything else all point at one file, so a
+   * re-render replaces it everywhere without a front-end deploy.
+   *
+   * express.static rather than sendFile, because a video needs HTTP range
+   * requests — without them a viewer cannot scrub, and Safari will not play the
+   * file at all.
+   */
+  app.use(
+    apiPath('/public/media'),
+    (_req: Request, res: Response, next) => {
+      res.set('Access-Control-Allow-Origin', '*');
+      res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+      next();
+    },
+    express.static(join(process.cwd(), 'src', 'media'), {
+      // A re-render changes the bytes behind the same name, so a week is the
+      // most a stale copy can linger. Immutable would be wrong here.
+      maxAge: '7d',
+      index: false,
+      dotfiles: 'ignore',
+      // Only the finished artefacts, never the working files beside them.
+      extensions: false,
+      setHeaders: (res, path) => {
+        if (path.endsWith('.mp4')) res.set('Content-Type', 'video/mp4');
+      },
+    }),
+  );
 
   // Public: testimonials — the feedback an operator has explicitly approved.
   // Nothing here identifies a player beyond the first name that was approved
