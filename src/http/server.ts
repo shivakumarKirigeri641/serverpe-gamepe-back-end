@@ -168,6 +168,47 @@ export function createServer(): Express {
   // The board is a real web page opened in a browser, so it must be framed by
   // nobody but must still be reachable cross-origin from WhatsApp's launcher.
   // Public: the full policies, readable in a browser rather than chat bubbles.
+  /**
+   * The policies as data, for the website to render at mastipe.in/policies.
+   *
+   * A privacy policy that lives on api.mastipe.in reads as somebody else's
+   * document: the host is unfamiliar, it is not the address on our own
+   * stationery, and a link to an API subdomain is exactly the shape of thing
+   * people are told not to click. The words still live in the database and are
+   * still edited in the admin panel — only the address changes.
+   *
+   * The server-rendered page below stays: WhatsApp messages sent months ago
+   * link to it, and those links must keep working forever.
+   */
+  app.get(apiPath('/public/legal'), async (req: Request, res: Response) => {
+    try {
+      const lang = req.query['lang'] === 'hi' ? 'hi' : 'en';
+      const docs = await listActiveDocuments();
+
+      res
+        .set('Cache-Control', 'public, max-age=300')
+        .set('Vary', 'Accept-Language')
+        .set('Access-Control-Allow-Origin', '*')
+        .json({
+          data: docs.map((d) => ({
+            key: d.doc_key,
+            version: d.version,
+            title: (lang === 'hi' && d.title_hi) || d.title,
+            summary: (lang === 'hi' && d.summary_hi) || d.summary,
+            body: (lang === 'hi' && d.body_hi) || d.body,
+            requiresConsent: d.requires_consent,
+            // Whether the Hindi has actually been written. The page says so:
+            // English remains the operative text, and a reader deserves to
+            // know which one they are looking at.
+            translated: lang === 'hi' ? Boolean(d.body_hi) : true,
+          })),
+        });
+    } catch (err) {
+      logger.error({ err }, 'failed to read legal documents');
+      res.status(500).json({ error: 'Internal error' });
+    }
+  });
+
   app.get(apiPath('/public/policies'), async (req: Request, res: Response) => {
     try {
       // Hindi on request only. Anything other than 'hi' is English rather than
@@ -445,6 +486,82 @@ export function createServer(): Express {
       logger.error({ err }, 'failed to read business profile');
       res.status(500).json({ error: 'Internal error' });
     }
+  });
+
+  /**
+   * robots.txt for the API host.
+   *
+   * This origin serves two public pages worth finding — the how-to-play demo
+   * and the policies — alongside things that must never be indexed: a board
+   * link is a signed URL to one person's ticket, and a checkout link opens a
+   * payment page. Those already carry noindex meta tags; this refuses the
+   * crawler a step earlier, before it fetches them at all.
+   *
+   * Served at the host root rather than under the API path, because that is the
+   * only place a crawler looks.
+   */
+  app.get('/robots.txt', (_req: Request, res: Response) => {
+    const base = apiPath('/public');
+    res
+      .type('text/plain')
+      .set('Cache-Control', 'public, max-age=3600')
+      .send(
+        [
+          '# api.mastipe.in — the MastiPe back-end.',
+          '#',
+          '# Two pages here are public and worth finding. Everything else is',
+          '# either a private link or an API, and is refused.',
+          '',
+          'User-agent: *',
+          `Allow: ${base}/demo`,
+          `Allow: ${base}/policies`,
+          `Allow: ${base}/brand`,
+          '',
+          "# One person's ticket, signed and private.",
+          `Disallow: ${base}/board`,
+          '# A payment page.',
+          `Disallow: ${base}/pay`,
+          '# The operator API.',
+          `Disallow: ${apiPath('/admin')}`,
+          '',
+          `Sitemap: ${env.PUBLIC_BASE_URL || 'https://api.mastipe.in'}${base}/sitemap.xml`,
+        ].join('\n'),
+      );
+  });
+
+  /**
+   * The public pages this host serves, in both languages.
+   *
+   * Kept here rather than as a static file because the origin and the API path
+   * are configuration — a sitemap with the wrong host in it is worse than none,
+   * and it is exactly the sort of thing that goes stale after a domain change.
+   */
+  app.get(apiPath('/public/sitemap.xml'), (_req: Request, res: Response) => {
+    const origin = (env.PUBLIC_BASE_URL || 'https://api.mastipe.in').replace(/\/+$/, '');
+    const page = (path: string): string =>
+      [
+        '  <url>',
+        `    <loc>${origin}${path}</loc>`,
+        `    <xhtml:link rel="alternate" hreflang="en-IN" href="${origin}${path}"/>`,
+        `    <xhtml:link rel="alternate" hreflang="hi-IN" href="${origin}${path}?lang=hi"/>`,
+        `    <xhtml:link rel="alternate" hreflang="x-default" href="${origin}${path}"/>`,
+        '    <changefreq>monthly</changefreq>',
+        '  </url>',
+      ].join('\n');
+
+    res
+      .type('application/xml')
+      .set('Cache-Control', 'public, max-age=3600')
+      .send(
+        [
+          '<?xml version="1.0" encoding="UTF-8"?>',
+          '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"',
+          '        xmlns:xhtml="http://www.w3.org/1999/xhtml">',
+          page(apiPath('/public/demo')),
+          page(apiPath('/public/policies')),
+          '</urlset>',
+        ].join('\n'),
+      );
   });
 
   // Public: testimonials — the feedback an operator has explicitly approved.
