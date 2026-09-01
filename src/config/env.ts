@@ -315,8 +315,27 @@ if (env.NODE_ENV === 'production') {
  * Derived from FREE_TRIAL_ENDS_AT so the date lives in one place; hard-coding
  * it into greetings is how copy and behaviour drift apart.
  */
+/**
+ * The trial's end date, as an instant.
+ *
+ * FREE_TRIAL_ENDS_AT is the default, not the authority: an operator can move
+ * the date from the admin panel, and that choice is held here so every sync
+ * caller — greetings, plan taglines, the charging switch — sees the same answer
+ * without any of them learning about the database.
+ */
+let trialEndOverride: Date | null = null;
+
+/** Called by the settings service at boot and whenever the date is changed. */
+export function setTrialEndOverride(date: Date | null): void {
+  trialEndOverride = date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+export function trialEnd(): Date {
+  return trialEndOverride ?? new Date(env.FREE_TRIAL_ENDS_AT);
+}
+
 export function trialEndLabel(lang: 'en' | 'hi' = 'en'): string {
-  const end = new Date(env.FREE_TRIAL_ENDS_AT);
+  const end = trialEnd();
   if (Number.isNaN(end.getTime())) return '';
   // "6 सितंबर" on the Hindi site: a Hindi sentence with an English month name
   // in the middle of it reads as a half-finished translation.
@@ -336,7 +355,7 @@ export function apiPath(relative: string): string {
 
 export function isChargingEnabled(now: Date = new Date()): boolean {
   if (!env.MONETIZATION_ENABLED) return false;
-  const trialEnd = new Date(env.FREE_TRIAL_ENDS_AT);
-  if (Number.isNaN(trialEnd.getTime())) return true;
-  return now > trialEnd;
+  const end = trialEnd();
+  if (Number.isNaN(end.getTime())) return true;
+  return now > end;
 }

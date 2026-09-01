@@ -1,5 +1,5 @@
 import { query, queryOne } from '../db/pool.js';
-import { env } from '../config/env.js';
+import { env, trialEnd } from '../config/env.js';
 import { logger } from '../utils/logger.js';
 import { appDate, appTimeString } from '../utils/time.js';
 import { sendMail, mailConfigured, type Attachment } from './mailer.service.js';
@@ -175,7 +175,7 @@ export async function gatherDigestStats(windowMinutes: number): Promise<DigestSt
   );
 
   const n = (k: string): number => Number(row?.[k] ?? 0);
-  const end = new Date(env.FREE_TRIAL_ENDS_AT);
+  const end = trialEnd();
 
   return {
     windowMinutes,

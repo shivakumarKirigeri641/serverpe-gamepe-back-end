@@ -2,6 +2,7 @@ import { env, isChargingEnabled, trialEndLabel } from './config/env.js';
 import { logger } from './utils/logger.js';
 import { registerAllGames } from './games/index.js';
 import { runMigrations } from './db/migrate.js';
+import { loadSettings } from './services/settings.service.js';
 import { ensureUploadFolders } from './services/document.service.js';
 import { pool } from './db/pool.js';
 import { redis } from './redis/client.js';
@@ -47,6 +48,10 @@ async function main(): Promise<void> {
 
   const ran = await runMigrations();
   if (ran.length) logger.info({ ran }, 'database migrated');
+
+  // After the migrations, before anything serves: an operator-set trial date
+  // must be in force for the very first message, not from the second restart.
+  await loadSettings();
 
   const server = startServer();
 
