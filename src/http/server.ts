@@ -36,7 +36,12 @@ import {
   renderTagline,
 } from '../services/plan.service.js';
 
-import { isForThisNumber, verifyChallenge, verifySignature } from '../whatsapp/verify.js';
+import {
+  isForThisNumber,
+  phoneNumberIdsIn,
+  verifyChallenge,
+  verifySignature,
+} from '../whatsapp/verify.js';
 import type { WhatsAppWebhookBody } from '../whatsapp/types.js';
 
 export function createServer(): Express {
@@ -122,7 +127,16 @@ export function createServer(): Express {
     // Another number under the same Meta account. Acknowledged so Meta stops
     // retrying, then dropped: replying would answer somebody else's user.
     if (!isForThisNumber(body)) {
-      logger.debug('ignored webhook addressed to a different phone number');
+      // Warn, not debug. One callback URL can serve several numbers, so seeing
+      // another number's traffic is normal — but a WHATSAPP_PHONE_NUMBER_ID
+      // that does not match the app drops every real message and looks
+      // identical to "nobody has messaged us". Naming both ids turns a silent
+      // misconfiguration into an obvious one.
+      const seen = phoneNumberIdsIn(body);
+      logger.warn(
+        { seen, expected: env.WHATSAPP_PHONE_NUMBER_ID },
+        'ignored webhook: phone_number_id does not match WHATSAPP_PHONE_NUMBER_ID',
+      );
       return;
     }
 

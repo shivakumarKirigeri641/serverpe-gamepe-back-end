@@ -39,6 +39,29 @@ export function verifySignature(rawBody: Buffer, headerValue: string | undefined
  * through — they carry no message to answer, so they can do no harm, and they
  * are how we learn whether our own sends arrived.
  */
+/**
+ * The phone number ids seen in a payload, for diagnostics.
+ *
+ * Exported so a dropped webhook can say *which* number it was for. The guard
+ * itself is silent by design — a shared callback URL receives other numbers'
+ * traffic all day — but "silently ignored" and "misconfigured" look identical
+ * from outside, and the difference is one string.
+ */
+export function phoneNumberIdsIn(body: unknown): string[] {
+  const entries = (body as { entry?: Array<{ changes?: Array<{ value?: { metadata?: { phone_number_id?: string } } }> }> })
+    ?.entry;
+  if (!Array.isArray(entries)) return [];
+
+  return [
+    ...new Set(
+      entries
+        .flatMap((e) => e.changes ?? [])
+        .map((c) => c.value?.metadata?.phone_number_id)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+}
+
 export function isForThisNumber(body: unknown): boolean {
   // No early "allow everything" escape: the schema makes the id required, so
   // reaching here without one is impossible. An escape hatch here would be a
