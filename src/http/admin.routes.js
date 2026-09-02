@@ -1,0 +1,363 @@
+/**
+ * The admin API.
+ *
+ * Two conventions the panel depends on:
+ *   - every success is wrapped as { data: ... }
+ *   - every failure is { error: "<sentence>" } with a real status code
+ *
+ * Everything except POST /session requires a bearer token.
+ */
+import { Router } from 'express';
+import { config } from '../config/env.js';
+import { log } from '../utils/logger.js';
+import { query } from '../db/pool.js';
+import { requestInfo } from '../utils/request-info.js';
+import { geoStatus } from '../services/geo.service.js';
+import { listenerCount } from '../services/live.service.js';
+import {
+  login, revokeSession, listSessions, requireAdmin, purgeExpired,
+} from '../services/admin-session.service.js';
+import * as data from '../services/admin-data.service.js';
+
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+const ok = (res, payload) => res.json({ data: payload });
+
+const int = (value, fallback) => {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+};
+
+/**
+ * Guards every ":id" route.
+ *
+ * Number('abc') and Number(undefined) are both NaN, and handing NaN to
+ * Postgres raises an error that surfaces as a bare 500. The panel asks for
+ * /players/undefined whenever a link is built before its data has loaded, so
+ * this is a routine request, not an attack - it deserves a clear 400.
+ */
+function idParam(req, res, next) {
+  const raw = req.params.id;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    return res.status(400).json({ error: `"${raw}" is not a valid id` });
+  }
+  req.id = n;
+  next();
+}
+
+export function adminRoutes() {
+  const router = Router();
+
+  // ─── auth ────────────────────────────────────────────────────────────────
+
+  router.post('/session', wrap(async (req, res) => {
+    const result = await login(req, {
+      passcode: String(req.body?.passcode ?? ''),
+      label: req.body?.label ? String(req.body.label).slice(0, 60) : null,
+    });
+
+    if (!result.ok) {
+      return res.status(result.status ?? 401).json({
+        error: result.reason,
+        attemptsRemaining: result.attemptsRemaining,
+        retryAfterSeconds: result.retryAfterSeconds,
+      });
+    }
+    ok(res, { token: result.token, expiresAt: result.expiresAt });
+  }));
+
+  // Everything below this line needs a valid session.
+  router.use(requireAdmin());
+
+  router.post('/session/logout', wrap(async (req, res) => {
+    const header = req.get('authorization') || '';
+    if (header.startsWith('Bearer ')) await revokeSession(header.slice(7).trim());
+    ok(res, { ok: true });
+  }));
+
+  router.get('/sessions', wrap(async (_req, res) => ok(res, await listSessions())));
+
+  // ─── dashboard ───────────────────────────────────────────────────────────
+
+  router.get('/overview',    wrap(async (_q, res) => ok(res, await data.overview())));
+  router.get('/comparisons', wrap(async (_q, res) => ok(res, await data.comparisons())));
+
+  router.get('/metrics/daily', wrap(async (req, res) =>
+    ok(res, await data.dailyMetrics({ days: int(req.query.days, 30) }))));
+
+  // ─── live ────────────────────────────────────────────────────────────────
+
+  router.get('/live', wrap(async (_req, res) => {
+    const snapshot = await data.live();
+    // How many browsers are actually holding a stream open right now. Only
+    // this process knows, so it is attached here rather than queried.
+    for (const g of snapshot.games) g.watchers = listenerCount(g.id);
+    ok(res, snapshot);
+  }));
+
+  router.get('/live/players', wrap(async (_q, res) => ok(res, await data.livePlayers())));
+
+  // ─── players ─────────────────────────────────────────────────────────────
+
+  router.get('/players', wrap(async (req, res) =>
+    ok(res, await data.listPlayers({
+      limit: int(req.query.limit, 100),
+      q: req.query.query || req.query.q || null,
+    }))));
+
+  router.get('/players/:id', idParam, wrap(async (req, res) => {
+    const player = await data.playerDetail(req.id);
+    if (!player) return res.status(404).json({ error: 'No such player' });
+    ok(res, {
+      detail: player,
+      consents: await data.playerConsents(player.id),
+      timeline: await data.playerTimeline(player.id, 60),
+      sessions: await data.playerSessions(player.id),
+      games: await data.playerGames(player.id),
+      // Wallets are part of monetisation, which is dormant during the free
+      // trial. Reported honestly rather than faked with zeroes.
+      wallet: null,
+    });
+  }));
+
+  router.get('/players/:id/consents', idParam, wrap(async (req, res) =>
+    ok(res, await data.playerConsents(req.id))));
+
+  router.get('/players/:id/timeline', idParam, wrap(async (req, res) =>
+    ok(res, await data.playerTimeline(req.id, int(req.query.limit, 60)))));
+
+  // ─── lookup ──────────────────────────────────────────────────────────────
+
+  router.get('/lookup/search', wrap(async (req, res) =>
+    ok(res, await data.lookupSearch(String(req.query.q ?? ''), int(req.query.limit, 25)))));
+
+  router.get('/lookup/:waId', wrap(async (req, res) => {
+    const found = await data.lookupByWaId(String(req.params.waId));
+    if (!found) return res.status(404).json({ error: 'No player with that number' });
+    ok(res, found);
+  }));
+
+  // ─── games ───────────────────────────────────────────────────────────────
+
+  router.get('/games', wrap(async (req, res) =>
+    ok(res, await data.listGames({
+      limit: int(req.query.limit, 100),
+      status: req.query.status || null,
+    }))));
+
+  router.get('/games/:id', idParam, wrap(async (req, res) => {
+    const found = await data.gameDetail(req.id);
+    if (!found) return res.status(404).json({ error: 'No such game' });
+    ok(res, found);
+  }));
+
+  router.get('/games/:id/timeline', idParam, wrap(async (req, res) =>
+    ok(res, await data.gameTimeline(req.id, int(req.query.limit, 400)))));
+
+  // ─── hosts ───────────────────────────────────────────────────────────────
+
+  router.get('/hosts', wrap(async (req, res) =>
+    ok(res, await data.listHosts({
+      limit: int(req.query.limit, 100),
+      offset: int(req.query.offset, 0) || 0,
+      search: req.query.search || null,
+    }))));
+
+  router.get('/hosts/:id', idParam, wrap(async (req, res) => {
+    const found = await data.hostDetail(req.id);
+    if (!found) return res.status(404).json({ error: 'No such host' });
+    ok(res, found);
+  }));
+
+  // ─── events ──────────────────────────────────────────────────────────────
+
+  router.get('/events', wrap(async (req, res) =>
+    ok(res, {
+      events: await data.listEvents({ limit: int(req.query.limit, 200), type: req.query.type || null }),
+      types: await data.eventTypes({ days: int(req.query.days, 30) }),
+    })));
+
+  router.get('/events/types', wrap(async (req, res) =>
+    ok(res, await data.eventTypes({ days: int(req.query.days, 30) }))));
+
+  // ─── conversations ───────────────────────────────────────────────────────
+
+  router.get('/conversations', wrap(async (req, res) =>
+    ok(res, await data.listConversations({
+      limit: int(req.query.limit, 100),
+      filter: req.query.filter || null,
+    }))));
+
+  router.get('/conversations/:id', idParam, wrap(async (req, res) => {
+    const thread = await data.conversation(req.id, int(req.query.limit, 200));
+    if (!thread.player) return res.status(404).json({ error: 'No such player' });
+    ok(res, thread);
+  }));
+
+  // ─── analytics ───────────────────────────────────────────────────────────
+
+  router.get('/funnel', wrap(async (req, res) =>
+    ok(res, await data.funnel({ days: int(req.query.days, 30) }))));
+
+  router.get('/engagement/response-times', wrap(async (req, res) =>
+    ok(res, await data.responseTimes({ days: int(req.query.days, 30) }))));
+
+  router.get('/messages/delivery', wrap(async (req, res) =>
+    ok(res, await data.messageDelivery({ days: int(req.query.days, 30) }))));
+
+  router.get('/legal/consents/stats', wrap(async (_q, res) => ok(res, await data.consentStats())));
+
+  // ─── feedback ────────────────────────────────────────────────────────────
+
+  router.get('/feedback', wrap(async (req, res) =>
+    ok(res, await data.listFeedback({ limit: int(req.query.limit, 100) }))));
+
+  router.post('/feedback/:id/approve', idParam, wrap(async (req, res) => {
+    await query(
+      `UPDATE feedback SET approved_at = now(), approved_by = $2, display_as = $3 WHERE id = $1`,
+      [req.id, req.admin?.label ?? 'admin', req.body?.displayAs ?? null],
+    );
+    ok(res, { ok: true });
+  }));
+
+  router.post('/feedback/:id/unapprove', idParam, wrap(async (req, res) => {
+    await query(
+      'UPDATE feedback SET approved_at = NULL, approved_by = NULL WHERE id = $1',
+      [req.id],
+    );
+    ok(res, { ok: true });
+  }));
+
+  // ─── moderation ──────────────────────────────────────────────────────────
+
+  router.get('/blocked', wrap(async (req, res) =>
+    ok(res, await data.listBlocked({ limit: int(req.query.limit, 500) }))));
+
+  router.get('/blocked/:waId/history', wrap(async (req, res) =>
+    ok(res, await data.blockHistory(String(req.params.waId)))));
+
+  router.post('/blocked', wrap(async (req, res) => {
+    const waId = String(req.body?.wa_id ?? req.body?.waId ?? '').replace(/\D/g, '');
+    if (!waId) return res.status(400).json({ error: 'A WhatsApp number is required' });
+    await blockOne(waId, req);
+    ok(res, { ok: true, blocked: [waId] });
+  }));
+
+  router.post('/blocked/bulk', wrap(async (req, res) => {
+    const numbers = (Array.isArray(req.body?.numbers) ? req.body.numbers : [])
+      .map((n) => String(n).replace(/\D/g, ''))
+      .filter(Boolean);
+    if (numbers.length === 0) return res.status(400).json({ error: 'No valid numbers supplied' });
+    for (const waId of numbers) await blockOne(waId, req);
+    ok(res, { ok: true, blocked: numbers });
+  }));
+
+  router.delete('/blocked/:waId', wrap(async (req, res) => {
+    const waId = String(req.params.waId).replace(/\D/g, '');
+    await query('DELETE FROM blocked_numbers WHERE wa_id = $1', [waId]);
+    await query(
+      `INSERT INTO block_history (wa_id, action, reason, performed_by)
+            VALUES ($1, 'unblocked', $2, $3)`,
+      [waId, req.body?.reason ?? null, req.admin?.label ?? 'admin'],
+    );
+    log.info('number unblocked', { waId, by: req.admin?.label });
+    ok(res, { ok: true });
+  }));
+
+  async function blockOne(waId, req) {
+    await query(
+      `INSERT INTO blocked_numbers (wa_id, reason, category, blocked_by)
+            VALUES ($1, $2, $3, $4)
+       ON CONFLICT (wa_id) DO UPDATE
+            SET reason = EXCLUDED.reason, category = EXCLUDED.category,
+                blocked_by = EXCLUDED.blocked_by, blocked_at = now()`,
+      [waId, req.body?.reason ?? null, req.body?.category ?? null, req.admin?.label ?? 'admin'],
+    );
+    await query(
+      `INSERT INTO block_history (wa_id, action, reason, category, performed_by, reported_by)
+            VALUES ($1, 'blocked', $2, $3, $4, $5)`,
+      [waId, req.body?.reason ?? null, req.body?.category ?? null,
+       req.admin?.label ?? 'admin', req.body?.reported_by ?? null],
+    );
+    log.info('number blocked', { waId, by: req.admin?.label });
+  }
+
+  // ─── settings ────────────────────────────────────────────────────────────
+
+  router.get('/settings', wrap(async (_req, res) => {
+    const { rows: tables } = await query(`
+      SELECT relname AS table, n_live_tup::int AS rows
+        FROM pg_stat_user_tables ORDER BY n_live_tup DESC`);
+
+    ok(res, {
+      business: {
+        brand_name: config.brandName,
+        whatsapp_number: config.whatsapp.businessNumber,
+        public_base_url: config.publicRoot,
+        timezone: config.timezone,
+      },
+      trial: await trialState(),
+      game: config.game,
+      whatsapp: {
+        live: config.whatsapp.live,
+        apiVersion: config.whatsapp.apiVersion,
+        webhookPath: config.whatsapp.webhookPath,
+        allowedRecipients: config.whatsapp.allowedRecipients,
+      },
+      geo: geoStatus(),
+      consent: await data.consentStats(),
+      sessions: await listSessions(),
+      queues: { tables },
+      // Legal documents are managed as files elsewhere; the policies page is
+      // rendered from code today, so there is nothing to list.
+      docs: [],
+    });
+  }));
+
+  router.get('/trial',          wrap(async (_q, res) => ok(res, await trialState())));
+  router.get('/settings/trial', wrap(async (_q, res) => ok(res, await trialState())));
+
+  router.get('/queues', wrap(async (_req, res) => {
+    const { rows } = await query(`
+      SELECT relname AS table, n_live_tup::int AS rows
+        FROM pg_stat_user_tables ORDER BY n_live_tup DESC`);
+    ok(res, { tables: rows });
+  }));
+
+  router.post('/maintenance/purge', wrap(async (req, res) => {
+    const days = int(req.body?.days, 90);
+    const messages = await query(
+      `DELETE FROM messages WHERE created_at < now() - make_interval(days => $1)`, [days]);
+    const events = await query(
+      `DELETE FROM analytics_events WHERE occurred_at < now() - make_interval(days => $1)`, [days]);
+    const processed = await query(
+      `DELETE FROM processed_messages WHERE received_at < now() - interval '7 days'`);
+    const admin = await purgeExpired();
+
+    log.warn('maintenance purge', { days, by: req.admin?.label });
+    ok(res, {
+      messages: messages.rowCount, events: events.rowCount,
+      processed_messages: processed.rowCount, ...admin,
+    });
+  }));
+
+  // ─── diagnostics ─────────────────────────────────────────────────────────
+
+  router.get('/whoami', wrap(async (req, res) =>
+    ok(res, { admin: req.admin, client: requestInfo(req) })));
+
+  return router;
+}
+
+async function trialState() {
+  const endsAt = new Date(config.freeTrialEndsAt);
+  const daysLeft = Math.ceil((endsAt.getTime() - Date.now()) / 86_400_000);
+  const { rows } = await query('SELECT count(*)::int AS games FROM games');
+  return {
+    free_trial_ends_at: config.freeTrialEndsAt,
+    days_left: daysLeft,
+    active: daysLeft > 0,
+    monetization_enabled: false,
+    games_played: rows[0].games,
+  };
+}

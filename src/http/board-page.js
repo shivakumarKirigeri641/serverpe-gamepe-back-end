@@ -1,0 +1,560 @@
+/**
+ * The board page: lobby, play and results in one self-contained document.
+ *
+ * No build step, no framework, no external requests. It is opened inside
+ * WhatsApp's in-app browser on a phone that may be on a weak connection, so
+ * everything - styles, script, fonts - ships inline and the page renders on
+ * first paint.
+ *
+ * The client is deliberately dumb: it never computes game state. It renders
+ * whatever the server sends, and on any doubt it re-fetches the whole
+ * snapshot rather than trying to patch what it thinks it missed.
+ */
+import { config } from '../config/env.js';
+
+export function boardPage() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#16151a">
+<title>${esc(config.brandName)} - Tambola</title>
+<style>
+:root{
+  --ink:#2b2118; --paper:#f4ecd8; --paper-edge:#e2d5b8;
+  --maroon:#8b1e3f; --maroon-deep:#5c0f2b; --gold:#d4a537;
+  --bg:#16151a; --panel:#1f1d24; --line:#332f3b; --text:#e8e6e3; --dim:#9a94a5;
+  --ok:#3fa46a; --no:#c04b4b;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  -webkit-text-size-adjust:100%;
+  padding-bottom:env(safe-area-inset-bottom);
+}
+.wrap{max-width:520px;margin:0 auto;padding:12px 12px 96px}
+
+/* ---- header ---- */
+header{display:flex;align-items:center;gap:10px;padding:6px 2px 12px}
+.brand{font-weight:700;letter-spacing:.02em;color:var(--gold)}
+.code{margin-left:auto;font:600 13px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+  background:var(--panel);border:1px solid var(--line);padding:6px 9px;border-radius:7px;letter-spacing:.12em}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}
+.dot.off{background:var(--no)}
+.dot.wait{background:var(--gold)}
+
+/* ---- called number banner ---- */
+.callout{
+  background:linear-gradient(160deg,var(--maroon),var(--maroon-deep));
+  border-radius:16px;padding:16px;text-align:center;position:relative;overflow:hidden;
+  box-shadow:0 6px 20px rgba(0,0,0,.35);
+}
+.callout .num{
+  font:800 68px/1 ui-rounded,system-ui,sans-serif;color:#fff;
+  text-shadow:0 3px 0 rgba(0,0,0,.25); letter-spacing:-.02em;
+}
+.callout .num.pop{animation:pop .45s cubic-bezier(.2,1.5,.4,1)}
+@keyframes pop{0%{transform:scale(.4);opacity:0}60%{transform:scale(1.12)}100%{transform:scale(1);opacity:1}}
+.callout .tag{color:#f7dfa5;font-size:14px;margin-top:6px;min-height:1.4em}
+.callout .seq{position:absolute;top:10px;left:12px;font-size:11px;color:#f7dfa5;opacity:.75}
+.timer{position:absolute;top:8px;right:10px;width:34px;height:34px}
+.timer circle{fill:none;stroke-width:3}
+.timer .bg{stroke:rgba(255,255,255,.18)}
+.timer .fg{stroke:var(--gold);stroke-linecap:round;transition:stroke-dashoffset .95s linear}
+.timer text{fill:#f7dfa5;font-size:12px;text-anchor:middle;dominant-baseline:central}
+
+/* ---- yes / no ---- */
+.answer{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+.answer button{
+  padding:14px 8px;border-radius:12px;border:1px solid var(--line);
+  background:var(--panel);color:var(--text);font:600 15px system-ui;cursor:pointer;
+  transition:transform .08s,background .15s;
+}
+.answer button:active{transform:scale(.97)}
+.answer button.yes.on{background:var(--ok);border-color:var(--ok);color:#fff}
+.answer button.no.on{background:var(--no);border-color:var(--no);color:#fff}
+.answer button[disabled]{opacity:.45;cursor:default}
+.nudge{text-align:center;font-size:13px;color:var(--dim);min-height:1.3em;margin:-4px 0 8px}
+.nudge.good{color:var(--ok)} .nudge.bad{color:var(--gold)}
+
+/* ---- the ticket: printed paper ---- */
+.ticket{
+  background:var(--paper);color:var(--ink);border-radius:4px;margin:12px 0;
+  box-shadow:0 4px 14px rgba(0,0,0,.4);
+  /* faint fibre texture, no image request */
+  background-image:radial-gradient(rgba(139,30,63,.05) 1px,transparent 1px);
+  background-size:7px 7px;
+}
+.ticket .stub{
+  display:flex;align-items:center;gap:8px;padding:7px 10px;
+  border-bottom:1px dashed var(--paper-edge);
+  font:600 11px/1 ui-monospace,Menlo,monospace;letter-spacing:.14em;
+  color:var(--maroon);text-transform:uppercase;
+}
+.ticket .stub .no{margin-left:auto;opacity:.65;letter-spacing:.06em}
+table{border-collapse:collapse;width:100%;table-layout:fixed}
+td{
+  border:1px solid rgba(139,30,63,.45); height:52px; text-align:center; position:relative;
+  font:600 20px/1 Georgia,"Times New Roman",serif; color:var(--ink);
+}
+td.blank{background:repeating-linear-gradient(45deg,transparent,transparent 5px,
+  rgba(139,30,63,.055) 5px,rgba(139,30,63,.055) 10px)}
+/* the dauber blot: number stays readable underneath */
+td.marked::after{
+  content:"";position:absolute;inset:50% auto auto 50%;
+  width:40px;height:40px;margin:-20px 0 0 -20px;border-radius:50%;
+  background:radial-gradient(circle at 38% 34%,rgba(200,40,70,.62),rgba(139,30,63,.48) 70%);
+  box-shadow:0 0 0 1px rgba(139,30,63,.18) inset;
+  animation:stamp .3s cubic-bezier(.2,1.6,.4,1);
+}
+@keyframes stamp{0%{transform:scale(.2);opacity:0}70%{transform:scale(1.15)}100%{transform:scale(1);opacity:1}}
+td.marked{color:#4a1020}
+td.hit{box-shadow:inset 0 0 0 3px var(--gold)}
+
+/* ---- called numbers panel ---- */
+details.called{background:var(--panel);border:1px solid var(--line);border-radius:12px;margin:10px 0}
+details.called summary{padding:11px 13px;cursor:pointer;font-size:14px;color:var(--dim);list-style:none}
+details.called summary::-webkit-details-marker{display:none}
+details.called summary::after{content:"▾";float:right;transition:transform .2s}
+details.called[open] summary::after{transform:rotate(180deg)}
+.grid90{display:grid;grid-template-columns:repeat(10,1fr);gap:3px;padding:0 10px 12px}
+.grid90 span{
+  aspect-ratio:1;display:grid;place-items:center;border-radius:5px;
+  font:600 11px ui-monospace,Menlo,monospace;background:#26232d;color:#5f5a6b;
+}
+.grid90 span.on{background:var(--maroon);color:#fff}
+.grid90 span.last{background:var(--gold);color:#2b2118}
+
+/* ---- claims ---- */
+.claims{
+  position:fixed;left:0;right:0;bottom:0;background:rgba(22,21,26,.97);
+  border-top:1px solid var(--line);padding:8px 10px calc(8px + env(safe-area-inset-bottom));
+  backdrop-filter:blur(8px);
+}
+.claims .row{display:flex;gap:6px;overflow-x:auto;max-width:520px;margin:0 auto;scrollbar-width:none}
+.claims .row::-webkit-scrollbar{display:none}
+.claims button{
+  flex:none;padding:9px 12px;border-radius:9px;border:1px solid var(--line);
+  background:var(--panel);color:var(--dim);font:600 13px system-ui;cursor:pointer;white-space:nowrap;
+}
+.claims button.able{border-color:var(--gold);color:var(--gold);
+  animation:glow 1.6s ease-in-out infinite}
+@keyframes glow{0%,100%{box-shadow:0 0 0 0 rgba(212,165,55,.35)}50%{box-shadow:0 0 0 6px rgba(212,165,55,0)}}
+.claims button.gone{opacity:.4;text-decoration:line-through;cursor:default}
+.claims button.mine{background:var(--gold);color:#2b2118;border-color:var(--gold);text-decoration:none}
+
+/* ---- lobby / results ---- */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin:10px 0}
+.card h2{margin:0 0 4px;font-size:17px;color:var(--gold)}
+.muted{color:var(--dim);font-size:14px}
+.plist{list-style:none;padding:0;margin:12px 0 0}
+.plist li{display:flex;align-items:center;gap:9px;padding:8px 0;border-top:1px solid var(--line)}
+.plist li:first-child{border-top:0}
+.av{width:30px;height:30px;border-radius:50%;background:var(--maroon);display:grid;place-items:center;
+  font:700 13px system-ui;color:#fff;flex:none}
+.tagpill{margin-left:auto;font-size:11px;color:var(--gold);border:1px solid var(--gold);
+  padding:2px 7px;border-radius:99px}
+.btn{display:block;width:100%;padding:15px;border-radius:12px;border:0;cursor:pointer;
+  font:700 16px system-ui;background:var(--gold);color:#2b2118;margin-top:12px}
+.btn[disabled]{opacity:.4;cursor:default}
+.btn.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+.warn{background:rgba(212,165,55,.1);border:1px solid rgba(212,165,55,.35);
+  border-radius:10px;padding:11px;font-size:13px;color:#f7dfa5;margin-top:12px}
+.prizes{list-style:none;padding:0;margin:8px 0 0}
+.prizes li{display:flex;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
+.prizes li b{margin-left:auto;color:var(--gold);font-weight:600}
+.prizes li.none b{color:var(--dim);font-weight:400}
+
+/* ---- toast feed ---- */
+#toasts{position:fixed;top:8px;left:0;right:0;display:flex;flex-direction:column;
+  align-items:center;gap:6px;pointer-events:none;z-index:20}
+.toast{background:var(--maroon);color:#fff;padding:9px 15px;border-radius:99px;
+  font-size:13px;box-shadow:0 4px 14px rgba(0,0,0,.4);animation:drop .3s}
+@keyframes drop{from{transform:translateY(-14px);opacity:0}}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div id="toasts"></div>
+<div class="wrap">
+  <header>
+    <span class="dot wait" id="conn" title="connecting"></span>
+    <span class="brand">${esc(config.brandName)}</span>
+    <span class="code" id="code">------</span>
+  </header>
+  <div id="view"><p class="muted">Loading your game…</p></div>
+</div>
+<div class="claims hidden" id="claimbar"><div class="row" id="claimrow"></div></div>
+
+<script>
+(function(){
+  "use strict";
+  var TOKEN = location.pathname.split('/board/')[1].split('/')[0];
+  var BASE  = location.pathname.split('/board/')[0] + '/board/' + TOKEN;
+
+  var state = null, es = null, tick = null, answeredSeq = 0, lastRendered = '';
+
+  var view = document.getElementById('view');
+  var conn = document.getElementById('conn');
+  var claimbar = document.getElementById('claimbar');
+  var claimrow = document.getElementById('claimrow');
+
+  // ---- helpers ----
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+  function initials(n){ return String(n||'?').trim().charAt(0).toUpperCase(); }
+  function post(path, body){
+    return fetch(BASE + path, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body||{})
+    }).then(function(r){ return r.json().then(function(j){ return {status:r.status, body:j}; }); });
+  }
+  function toast(msg){
+    var el = document.createElement('div');
+    el.className = 'toast'; el.textContent = msg;
+    document.getElementById('toasts').appendChild(el);
+    setTimeout(function(){ el.remove(); }, 4200);
+  }
+  function setConn(cls, title){ conn.className = 'dot ' + cls; conn.title = title; }
+
+  // ---- live connection ----
+  // EventSource reconnects by itself; we only have to re-sync state when it
+  // does, which is what makes a suspended in-app browser recover cleanly.
+  function connect(){
+    if (es) es.close();
+    es = new EventSource(BASE + '/stream');
+
+    es.addEventListener('open', function(){ setConn('', 'live'); });
+    es.addEventListener('error', function(){ setConn('off', 'reconnecting…'); });
+
+    es.addEventListener('state', function(e){ apply(JSON.parse(e.data)); });
+    es.addEventListener('state_stale', function(){ refresh(); });
+    es.addEventListener('started', function(){ refresh(); });
+
+    es.addEventListener('draw', function(e){
+      var d = JSON.parse(e.data);
+      if (!state) return refresh();
+      state.draws.push({seq:d.seq, value:d.value, tagline:d.tagline});
+      state.current = d;
+      state.secondsLeft = d.intervalSeconds;
+      answeredSeq = 0;
+      render(true);
+      refreshClaims();
+    });
+
+    es.addEventListener('claim', function(e){
+      var c = JSON.parse(e.data);
+      toast(c.winner + ' claimed ' + c.label + '!');
+      refreshClaims();
+    });
+
+    es.addEventListener('game_over', function(){ refresh(); });
+  }
+
+  function refresh(){
+    return fetch(BASE + '/state').then(function(r){
+      if (!r.ok) throw new Error('state ' + r.status);
+      return r.json();
+    }).then(apply).catch(function(){ setConn('off','offline'); });
+  }
+  function refreshClaims(){
+    return fetch(BASE + '/state').then(function(r){ return r.json(); })
+      .then(function(s){ state.prizes = s.prizes; renderClaims(); });
+  }
+
+  function apply(s){
+    var wasStatus = state && state.game.status;
+    state = s;
+    document.getElementById('code').textContent = s.game.code;
+    setConn('', 'live');
+    render(wasStatus !== s.game.status);
+  }
+
+  // ---- rendering ----
+  function render(force){
+    if (!state) return;
+    var key = state.game.status;
+    if (key === 'lobby') renderLobby();
+    else if (key === 'running') renderGame(force);
+    else renderOver();
+  }
+
+  function renderLobby(){
+    claimbar.classList.add('hidden');
+    var s = state;
+    var need = Math.max(0, s.minPlayers - s.joined);
+    // s.expected lives under s.game, not at the top level. Reading the wrong
+    // one rendered "1 of undefined joined".
+    var expected = s.game.expected;
+    var html = '<div class="card">' +
+      '<h2>Waiting for players</h2>' +
+      '<div class="muted">' + s.joined + ' of ' + expected + ' joined' +
+        (need > 0 ? ' &middot; ' + need + ' more needed to start' : '') + '</div>' +
+      '<ul class="plist">' + s.players.map(function(p){
+        return '<li><span class="av">' + esc(initials(p.name)) + '</span>' + esc(p.name) +
+          (p.isHost ? '<span class="tagpill">host</span>' : '') + '</li>';
+      }).join('') + '</ul>';
+
+    if (s.you.isHost) {
+      html += '<button class="btn" id="startBtn"' + (s.canStart ? '' : ' disabled') + '>Start Game</button>' +
+        '<div class="warn">Once you start, ' + esc(s.brand) + ' takes over as host and you play as a ' +
+        'normal player. No one else can join after that.</div>';
+    } else {
+      html += '<div class="muted" style="margin-top:12px">Your ticket is ready. ' +
+        'The game begins when your host starts it.</div>';
+    }
+
+    // The ticket stays sealed until the game starts. Showing it in the lobby
+    // gives people minutes to study it, which is not how tambola is played -
+    // the first look should come with the first number.
+    html += '</div>' +
+      '<div class="card" style="text-align:center">' +
+        '<div style="font-size:34px;line-height:1;margin-bottom:8px">🎟️</div>' +
+        '<h2>Your ticket is sealed</h2>' +
+        '<div class="muted">It opens the moment the game starts.</div>' +
+      '</div>';
+
+    setView(html, 'lobby-' + s.joined + '-' + s.canStart);
+
+    var b = document.getElementById('startBtn');
+    if (b) b.onclick = function(){
+      b.disabled = true; b.textContent = 'Starting…';
+      post('/start').then(function(r){
+        if (r.status !== 200) { toast(r.body.error || 'Could not start'); b.disabled = false; b.textContent = 'Start Game'; }
+      });
+    };
+  }
+
+  function renderGame(force){
+    var s = state, cur = s.current;
+    var html = '<div class="callout">' +
+      (cur ? '<div class="seq">Number ' + cur.seq + ' of 90</div>' : '') +
+      timerSvg() +
+      '<div class="num' + (force ? '' : ' pop') + '" id="num">' + (cur ? cur.value : '–') + '</div>' +
+      '<div class="tag">' + esc(cur ? cur.tagline : 'Get ready…') + '</div>' +
+    '</div>' +
+    '<div class="answer">' +
+      '<button class="yes" id="yes">✓ I have it</button>' +
+      '<button class="no" id="no">✗ Not on mine</button>' +
+    '</div>' +
+    '<div class="nudge" id="nudge"></div>' +
+    ticketHtml() + calledHtml();
+
+    setView(html, 'game');
+    wireAnswers();
+    startTimer();
+    claimbar.classList.remove('hidden');
+    renderClaims();
+  }
+
+  function renderOver(){
+    claimbar.classList.add('hidden');
+    if (tick) clearInterval(tick);
+    var r = state.results || {prizes:[], players:[]};
+    var reason = state.game.endedReason === 'full_house'
+      ? 'Full House! That is game.' : 'All 90 numbers called.';
+
+    var html = '<div class="card"><h2>Game over</h2>' +
+      '<div class="muted">' + esc(reason) + '</div>' +
+      '<ul class="prizes">' + r.prizes.map(function(p){
+        return '<li class="' + (p.winner ? '' : 'none') + '">' + esc(p.label) +
+          '<b>' + esc(p.winner || 'unclaimed') + '</b></li>';
+      }).join('') + '</ul></div>';
+
+    if (r.players.length) {
+      html += '<div class="card"><h2>Who was paying attention</h2><ul class="prizes">' +
+        r.players.map(function(p){
+          return '<li>' + esc(p.name) + '<b>' + p.correct + '/' + p.total + '</b></li>';
+        }).join('') + '</ul></div>';
+    }
+    html += '<div class="card"><div class="muted">Thanks for playing! Head back to WhatsApp ' +
+      'to start another game.</div></div>' + ticketHtml();
+    setView(html, 'over');
+  }
+
+  /** Replaces the view only when the shape actually changed, so the ticket
+   *  does not visibly re-mount on every single draw. */
+  function setView(html, key){
+    if (key === 'game' && lastRendered === 'game') { patchGame(); return; }
+    view.innerHTML = html;
+    lastRendered = key;
+  }
+
+  function patchGame(){
+    var cur = state.current;
+    var num = document.getElementById('num');
+    if (num && cur && num.textContent !== String(cur.value)) {
+      num.textContent = cur.value;
+      num.classList.remove('pop'); void num.offsetWidth; num.classList.add('pop');
+      var seqEl = document.querySelector('.callout .seq');
+      if (seqEl) seqEl.textContent = 'Number ' + cur.seq + ' of 90';
+      document.querySelector('.callout .tag').textContent = cur.tagline;
+      document.getElementById('nudge').textContent = '';
+      document.getElementById('nudge').className = 'nudge';
+    }
+    updateTicket(); updateCalled(); wireAnswers(); startTimer();
+  }
+
+  // ---- ticket ----
+  function ticketHtml(){
+    var t = state.ticket; if (!t) return '';
+    var marked = state.marked || [];
+    var rows = t.grid.map(function(row){
+      return '<tr>' + row.map(function(v){
+        if (v === null) return '<td class="blank"></td>';
+        return '<td data-n="' + v + '" class="' + (marked.indexOf(v) >= 0 ? 'marked' : '') + '">' + v + '</td>';
+      }).join('') + '</tr>';
+    }).join('');
+    return '<div class="ticket"><div class="stub">' + esc(state.brand) +
+      '<span class="no">Ticket ' + esc(state.game.code) + '</span></div>' +
+      '<table><tbody>' + rows + '</tbody></table></div>';
+  }
+
+  function updateTicket(){
+    var marked = state.marked || [];
+    var cur = state.current;
+    document.querySelectorAll('.ticket td[data-n]').forEach(function(td){
+      var n = Number(td.dataset.n);
+      td.classList.toggle('marked', marked.indexOf(n) >= 0);
+      td.classList.toggle('hit', !!(cur && cur.value === n));
+    });
+  }
+
+  // ---- called numbers ----
+  function calledHtml(){
+    return '<details class="called"><summary id="calledSum"></summary>' +
+      '<div class="grid90" id="grid90"></div></details>';
+  }
+  function updateCalled(){
+    var sum = document.getElementById('calledSum');
+    var grid = document.getElementById('grid90');
+    if (!sum || !grid) return;
+    var drawn = {}; state.draws.forEach(function(d){ drawn[d.value] = true; });
+    var last = state.current ? state.current.value : null;
+    sum.textContent = 'Numbers called (' + state.draws.length + ' of 90)';
+    if (grid.childElementCount !== 90) {
+      var h = '';
+      for (var i = 1; i <= 90; i++) h += '<span data-v="' + i + '">' + i + '</span>';
+      grid.innerHTML = h;
+    }
+    grid.querySelectorAll('span').forEach(function(el){
+      var v = Number(el.dataset.v);
+      el.className = drawn[v] ? (v === last ? 'on last' : 'on') : '';
+    });
+  }
+
+  // ---- answering ----
+  function wireAnswers(){
+    var cur = state.current;
+    var yes = document.getElementById('yes'), no = document.getElementById('no');
+    if (!yes || !no) return;
+    var done = cur && answeredSeq === cur.seq;
+    yes.disabled = no.disabled = !cur || done;
+
+    yes.onclick = function(){ answer('yes'); };
+    no.onclick  = function(){ answer('no'); };
+  }
+
+  function answer(a){
+    var cur = state.current; if (!cur) return;
+    answeredSeq = cur.seq;
+    var yes = document.getElementById('yes'), no = document.getElementById('no');
+    yes.disabled = no.disabled = true;
+    (a === 'yes' ? yes : no).classList.add('on');
+
+    post('/answer', {seq:cur.seq, answer:a}).then(function(r){
+      var n = document.getElementById('nudge');
+      if (r.status !== 200) { n.textContent = r.body.error || 'Could not record that'; return; }
+      var d = r.body;
+
+      // Always report the answer the SERVER stored. On a double tap the second
+      // one is discarded, and showing feedback for a tap that did not count
+      // would be a lie.
+      a = d.answer;
+      if (d.alreadyAnswered) {
+        yes.classList.toggle('on', a === 'yes');
+        no.classList.toggle('on', a === 'no');
+      }
+
+      // The player marks their own ticket - but a wrong tap is corrected
+      // rather than punished, and never affects a prize claim.
+      if (d.onTicket && a === 'yes') {
+        state.marked.push(d.value);
+        n.textContent = 'Marked!'; n.className = 'nudge good';
+      } else if (d.onTicket && a === 'no') {
+        state.marked.push(d.value);
+        n.textContent = 'Actually ' + d.value + ' IS on your ticket — marked it for you.';
+        n.className = 'nudge bad';
+      } else if (!d.onTicket && a === 'yes') {
+        n.textContent = d.value + ' is not on your ticket.';
+        n.className = 'nudge bad';
+      } else {
+        n.textContent = 'Correct — not on your ticket.'; n.className = 'nudge good';
+      }
+      updateTicket(); refreshClaims();
+    });
+  }
+
+  // ---- countdown ----
+  function timerSvg(){
+    return '<svg class="timer" viewBox="0 0 36 36">' +
+      '<circle class="bg" cx="18" cy="18" r="15"></circle>' +
+      '<circle class="fg" id="ring" cx="18" cy="18" r="15" ' +
+        'transform="rotate(-90 18 18)" stroke-dasharray="94.2" stroke-dashoffset="0"></circle>' +
+      '<text x="18" y="18" id="ringT"></text></svg>';
+  }
+  function startTimer(){
+    if (tick) clearInterval(tick);
+    var left = state.secondsLeft == null ? state.game.drawInterval : state.secondsLeft;
+    var total = state.game.drawInterval || 12;
+    paint();
+    tick = setInterval(function(){ left = Math.max(0, left - 1); paint(); }, 1000);
+    function paint(){
+      var ring = document.getElementById('ring'), t = document.getElementById('ringT');
+      if (!ring) return;
+      ring.setAttribute('stroke-dashoffset', String(94.2 * (1 - Math.max(0, left) / total)));
+      t.textContent = left > 0 ? left : '';
+    }
+  }
+
+  // ---- claims ----
+  function renderClaims(){
+    if (!state.prizes) return;
+    claimrow.innerHTML = state.prizes.map(function(p){
+      var cls = p.awarded ? (p.awarded.isYou ? 'mine' : 'gone') : (p.eligible ? 'able' : '');
+      var label = p.awarded ? p.label + ' · ' + p.awarded.winner : p.label;
+      return '<button data-k="' + p.key + '" class="' + cls + '"' +
+        (p.awarded ? ' disabled' : '') + '>' + esc(label) + '</button>';
+    }).join('');
+
+    claimrow.querySelectorAll('button[data-k]').forEach(function(b){
+      b.onclick = function(){
+        b.disabled = true;
+        post('/claim', {claimType:b.dataset.k}).then(function(r){
+          if (!r.body.ok) { toast(r.body.reason || 'Not yet!'); b.disabled = false; }
+          refreshClaims();
+        });
+      };
+    });
+  }
+
+  // ---- boot ----
+  refresh().then(connect);
+
+  // A backgrounded in-app browser can silently freeze the stream. Re-syncing
+  // whenever the page becomes visible again is what makes that invisible.
+  document.addEventListener('visibilitychange', function(){
+    if (!document.hidden) { refresh(); if (!es || es.readyState === 2) connect(); }
+  });
+})();
+</script>
+</body>
+</html>`;
+}
+
+function esc(value) {
+  return String(value).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
