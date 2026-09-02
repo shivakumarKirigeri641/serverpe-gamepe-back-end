@@ -84,6 +84,14 @@ export function feedbackUrl(playerId, gameId = 0) {
   return `${config.publicRoot}/feedback/${signBoardToken(gameId, playerId)}`;
 }
 
+/**
+ * The whole-history report. Signed per player like every other link, with
+ * gameId 0 because it is not about one game.
+ */
+export function historyUrl(playerId) {
+  return `${config.publicRoot}/history/${signBoardToken(0, playerId)}`;
+}
+
 export function supportUrl(playerId, gameId = 0) {
   return `${config.publicRoot}/support/${signBoardToken(gameId, playerId)}`;
 }

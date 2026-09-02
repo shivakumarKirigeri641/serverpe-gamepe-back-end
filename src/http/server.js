@@ -4,6 +4,8 @@
  * Routes get mounted here as each phase lands. Right now: health only.
  */
 import express, { Router } from 'express';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { config } from '../config/env.js';
 import { log } from '../utils/logger.js';
 import { pool } from '../db/pool.js';
@@ -13,6 +15,9 @@ import { boardRoutes } from './board.routes.js';
 import { adminRoutes } from './admin.routes.js';
 import { publicRoutes } from './public.routes.js';
 import { formsRoutes } from './forms.routes.js';
+
+/** src/media, resolved from this file so the cwd cannot change the answer. */
+const mediaDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'media');
 
 export function createApp() {
   const app = express();
@@ -82,6 +87,33 @@ export function createApp() {
   }
 
   api.use(config.admin.basePath, adminRoutes());
+
+  /**
+   * The demo videos, and anything else that ships with the repo.
+   *
+   * express.static is used rather than a hand-rolled handler for one reason
+   * that matters here: it answers Range requests. Without byte ranges a phone
+   * cannot seek or resume a 5MB video - some browsers will not even start
+   * playback, because they ask for the last few bytes first to read the moov
+   * atom, and a server that ignores Range hands them the whole file instead.
+   *
+   * ETag and Last-Modified stay on (the defaults), so replacing an mp4 in
+   * src/media is picked up on the next revalidation rather than being cached
+   * for a day on somebody's phone.
+   */
+  api.use(
+    '/public/media',
+    express.static(mediaDir, {
+      maxAge: '1h',
+      index: false,
+      dotfiles: 'deny',
+      // Falls through to the app's own 404 rather than handing express.static
+      // the last word. With fallthrough:false a missing file is pushed into
+      // the error handler and comes back as a 500, which would say the server
+      // is broken when the truth is only that a video was renamed.
+      fallthrough: true,
+    }),
+  );
 
   api.use(publicRoutes());
   api.use(formsRoutes());

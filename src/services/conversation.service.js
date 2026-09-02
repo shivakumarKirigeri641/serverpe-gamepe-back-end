@@ -22,6 +22,7 @@ import {
 } from './player.service.js';
 import {
   createGame, joinGame, getGameByCode, findActiveGameForPlayer, leaveGame, GameError,
+  hasPlayedBefore,
 } from './game.service.js';
 import { recordEvent } from './tracking.service.js';
 import { notify } from './notification.service.js';
@@ -33,7 +34,7 @@ import { saveRating, saveComment } from './feedback.service.js';
 import {
   getTicketByReference, openTicketForPlayer, appendPlayerMessage,
 } from './support.service.js';
-import { feedbackUrl, supportUrl } from '../utils/code.js';
+import { feedbackUrl, supportUrl, historyUrl } from '../utils/code.js';
 
 export { STATES } from './conversation-states.js';
 
@@ -169,6 +170,7 @@ async function handleButton(player, state, replyId) {
       return sendList(player.wa_id, copy.optionsMenu(), optionsList());
 
     case OPTIONS.REPORT:   return handleRecentReport(player);
+    case OPTIONS.HISTORY:  return handlePlayHistory(player);
     case OPTIONS.DEMO:     return handleDemo(player);
     case OPTIONS.SPONSOR:  return sendText(player.wa_id, copy.sponsorPlaceholder());
     case OPTIONS.FEEDBACK: return handleFeedbackLink(player);
@@ -227,6 +229,10 @@ async function createRoom(player, state) {
     return startHostFlow(player);
   }
 
+  // Asked BEFORE the room exists. createGame seats the host, so checking
+  // afterwards would report that every first-time host has played before.
+  const hostPlayedBefore = await hasPlayedBefore(player.id);
+
   let game;
   try {
     game = await createGame({ hostPlayerId: player.id, expectedPlayers: playerCount });
@@ -250,7 +256,14 @@ async function createRoom(player, state) {
     properties: { code: game.code, expectedPlayers: playerCount },
   });
 
-  await sendText(player.wa_id, copy.gameCreated(game.code, inviteUrl(game.code)));
+  // Checked before the host is seated below, so a first-time host still
+  // counts as one.
+  const hostIsNew = !hostPlayedBefore;
+  await sendText(
+    player.wa_id,
+    copy.gameCreated(game.code, inviteUrl(game.code)) +
+      (hostIsNew ? copy.demoTip(config.demoUrl) : ''),
+  );
   return sendCtaUrl(player.wa_id, copy.hostStartWarning(), {
     displayText: 'Open game room',
     url: boardUrl(game.id, player.id),
@@ -280,6 +293,20 @@ async function handleJoinRequest(player, rawCode) {
     return sendText(player.wa_id, copy.joinFailed('that game code does not exist'));
   }
 
+  // The game is already over.
+  //
+  // This happens more than it sounds like it should: an invite link sits in a
+  // group chat, someone taps it an hour later, or a player who was in the game
+  // re-opens the old message. Falling through to joinGame() would answer with
+  // "sorry, that game has finished" and nothing else - a dead end for someone
+  // whose own game it was.
+  if (game.status === 'finished' || game.status === 'abandoned') {
+    return afterTheGame(player, game);
+  }
+
+  // Asked before joinGame seats them, for the same reason as the host path.
+  const playedBefore = await hasPlayedBefore(player.id);
+
   try {
     const { game: joined, alreadyJoined } = await joinGame({ code, playerId: player.id });
     await setState(player.id, STATES.IN_LOBBY, { gameId: joined.id, code: joined.code });
@@ -294,7 +321,10 @@ async function handleJoinRequest(player, rawCode) {
     const host = await getPlayerById(joined.host_player_id);
     const body = alreadyJoined
       ? copy.alreadyJoined(joined.code)
-      : copy.joined(joined.code, host ? displayNameFor(host) : null);
+      : copy.joined(joined.code, host ? displayNameFor(host) : null) +
+        // Only on the first join, and only for someone who has never played.
+        // Re-opening a room they are already in is not the moment for advice.
+        (playedBefore ? '' : copy.demoTip(config.demoUrl));
 
     return sendCtaUrl(player.wa_id, body, {
       displayText: 'Enter game room',
@@ -304,6 +334,46 @@ async function handleJoinRequest(player, rawCode) {
     if (err instanceof GameError) return sendText(player.wa_id, copy.joinFailed(err.message));
     throw err;
   }
+}
+
+/**
+ * Someone reached for a game that has already ended.
+ *
+ * Two different people arrive here and they need different answers:
+ *
+ *   - Somebody who PLAYED. Their game happened, and their report is a real
+ *     thing they are entitled to. They get told how it ended and handed a link
+ *     straight to it.
+ *   - Somebody who never played - a stale invite tapped by a stranger. There
+ *     is no report to offer, so they get pointed at starting their own game
+ *     rather than left on an error.
+ *
+ * The seated check uses game_players and ignores left_at deliberately: a
+ * player who dropped out halfway still played, and their report still shows
+ * the numbers up to the point they left.
+ */
+async function afterTheGame(player, game) {
+  const { rows } = await query(
+    'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
+    [game.id, player.id],
+  );
+  const played = rows.length > 0;
+
+  await setState(player.id, STATES.MENU, {});
+  await recordEvent({
+    type: 'game.reopened_after_end', source: 'whatsapp',
+    playerId: player.id, gameId: game.id,
+    properties: { played, endedReason: game.ended_reason },
+  });
+
+  if (!played) {
+    return sendText(player.wa_id, copy.gameOverNotYours(game.code));
+  }
+
+  return sendCtaUrl(player.wa_id, copy.gameAlreadyOver(game.code, game.ended_reason), {
+    displayText: 'See my report',
+    url: reportUrl(game.id, player.id),
+  });
 }
 
 /**
@@ -334,6 +404,35 @@ async function handleLeave(player) {
 // --- Options ---------------------------------------------------------------
 
 /** Their most recent FINISHED game. A game still running has no report yet. */
+/**
+ * The whole play history, as a downloadable page.
+ *
+ * Distinct from "Recently played", which is one game. This is every game since
+ * their first, with trends, a scorecard and what to work on - the thing a
+ * regular player asks for once they have enough games to be curious about
+ * their own record.
+ */
+async function handlePlayHistory(player) {
+  const { rows } = await query(
+    'SELECT count(*)::int AS n FROM game_players WHERE player_id = $1',
+    [player.id],
+  );
+  const played = rows[0].n;
+
+  // Nothing to report is not an error, and should not read like one.
+  if (played === 0) return sendText(player.wa_id, copy.noHistoryYet());
+
+  await recordEvent({
+    type: 'history.requested', source: 'whatsapp', playerId: player.id,
+    properties: { games: played },
+  });
+
+  return sendCtaUrl(player.wa_id, copy.playHistory(played), {
+    displayText: 'Get my history',
+    url: historyUrl(player.id),
+  });
+}
+
 async function handleRecentReport(player) {
   const { rows } = await query(
     `SELECT g.id, g.code, g.ended_at
@@ -360,7 +459,7 @@ async function handleRecentReport(player) {
 
 async function handleDemo(player) {
   return sendCtaUrl(player.wa_id, copy.demoIntro(), {
-    displayText: 'How to play',
+    displayText: 'Watch the demo',
     url: config.demoUrl,
   });
 }

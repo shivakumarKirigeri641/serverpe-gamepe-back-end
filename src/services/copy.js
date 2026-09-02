@@ -103,6 +103,29 @@ export const copy = {
 
   joinFailed: (reason) => `Sorry - ${reason}.\n\nType *hi* to start again.`,
 
+  /**
+   * They tapped into a game that has already finished, and they were in it.
+   *
+   * Not an error - they did nothing wrong, and their game genuinely happened.
+   * So this says what became of it and hands them the one thing still worth
+   * having: their own report.
+   */
+  gameAlreadyOver: (code, endedReason) => {
+    const how =
+      endedReason === 'full_house' ? 'Someone completed their full ticket.'
+        : endedReason === 'abandoned' ? 'It ended early - too few players were left to carry on.'
+          : 'All 90 numbers were called.';
+    return (
+      `*Game ${code} is over.*\n\n${how}\n\n` +
+      `Your report is still here — your ticket, every number called, and how you marked it.`
+    );
+  },
+
+  /** Over, and they were never in it. Nothing to show, so point them onward. */
+  gameOverNotYours: (code) =>
+    `*Game ${code} has already finished*, so there's nothing to join.\n\n` +
+    `Type *hi* to start a game of your own.`,
+
   alreadyInGame: (code) =>
     `You're already in game *${code}*.\n\n` +
     `Finish or leave that one before starting another. Open it below.`,
@@ -121,9 +144,47 @@ export const copy = {
     `Ticket, every number called, your taps and how accurate you were:\n${url}\n\n` +
     `Open it and tap *Save as PDF* to keep a copy.`,
 
+  /** They asked for their history before playing anything. */
+  noHistoryYet: () =>
+    `You have not played a game yet, so there is no history to show.
+
+` +
+    `Play one and this fills in by itself - every game, your accuracy, and how ` +
+    `you are improving.
+
+Type *hi* to start.`,
+
+  playHistory: (games) =>
+    `*Your play history* 📊
+
+` +
+    `All ${games} game${games === 1 ? '' : 's'} you have played, in one page: every game with ` +
+    `dates and results, your accuracy over time, prizes won, how you compare with the ` +
+    `people you play with, and what to work on.
+
+` +
+    `Open it and tap *Save as PDF* to keep a copy.`,
+
   demoIntro: () =>
-    `Here's how ${brand()} works — a real ticket, with numbers being called. ` +
-    `Takes about a minute.`,
+    `Here's how ${brand()} works — a short video, plus a real ticket with numbers ` +
+    `being called.`,
+
+  /**
+   * Suggested to people about to play for the first time.
+   *
+   * Worth the extra lines because the two mistakes a first-timer makes are
+   * both expensive and both preventable in sixty seconds: they do not realise
+   * a number they miss is gone, and they do not realise a prize has to be
+   * claimed rather than being awarded automatically.
+   *
+   * A recommendation, not a gate. They can ignore it and start playing, and
+   * anyone who has played before never sees it at all - a tip that repeats
+   * forever stops reading as advice and starts reading as noise.
+   */
+  demoTip: (url) =>
+    `\n\n💡 *First time? Watch the short demo first:*\n${url}\n` +
+    `It shows how to mark your ticket and how to claim a prize — worth it ` +
+    `before the numbers start.`,
 
   /** Not on sale yet. Said plainly rather than dressed up as a teaser. */
   sponsorPlaceholder: () =>
@@ -253,6 +314,7 @@ export const planButtons = () => [
  */
 export const OPTIONS = {
   REPORT: 'opt_report',
+  HISTORY: 'opt_history',
   DEMO: 'opt_demo',
   SPONSOR: 'opt_sponsor',
   FEEDBACK: 'opt_feedback',
@@ -267,7 +329,8 @@ export const optionsList = () => ({
     title: 'Options',
     rows: [
       { id: OPTIONS.REPORT, title: 'Recently played', description: 'Your last game report, ready to download' },
-      { id: OPTIONS.DEMO, title: 'How to play', description: 'A short walkthrough with a real ticket' },
+      { id: OPTIONS.HISTORY, title: 'Get my play history', description: 'Every game you have played, ready to download' },
+      { id: OPTIONS.DEMO, title: 'How to play', description: 'A short video, and a walkthrough on a real ticket' },
       { id: OPTIONS.SPONSOR, title: 'Sponsor a parent', description: `Support a parent on ${config.sponsorship.partner}` },
       { id: OPTIONS.FEEDBACK, title: 'Give feedback', description: 'Rate a game and tell us what you think' },
       { id: OPTIONS.SUPPORT, title: 'Support', description: 'Raise a question and get a reference' },

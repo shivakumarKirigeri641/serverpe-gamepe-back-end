@@ -81,6 +81,25 @@ export async function getGameByCode(code) {
   return rows[0] ?? null;
 }
 
+/**
+ * Has this player ever been seated in a game before?
+ *
+ * Used to decide whether to recommend the demo. Counts every seat ever taken,
+ * including games they left early and games that were abandoned - someone who
+ * sat at a table while numbers were called has seen how this works, whatever
+ * became of that game.
+ *
+ * Call it BEFORE seating them in the game about to start, or the row just
+ * inserted makes every player look like a veteran.
+ */
+export async function hasPlayedBefore(playerId) {
+  const { rows } = await query(
+    'SELECT 1 FROM game_players WHERE player_id = $1 LIMIT 1',
+    [playerId],
+  );
+  return rows.length > 0;
+}
+
 export async function getGameById(id) {
   const { rows } = await query('SELECT * FROM games WHERE id = $1', [id]);
   return rows[0] ?? null;
@@ -101,9 +120,19 @@ export async function joinGame({ code, playerId }) {
     if (!game) throw new GameError('no_such_game', 'That game code does not exist');
 
     const { rows: existing } = await client.query(
-      'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
+      'SELECT left_at FROM game_players WHERE game_id = $1 AND player_id = $2',
       [game.id, playerId],
     );
+
+    // Leaving is final, and this is where that is enforced.
+    //
+    // Without it the row still exists, so a player who left would be told
+    // "you're already in this game" and handed a board link that then refuses
+    // them - isPlayerInGame filters on left_at. Refusing here, with a reason,
+    // is the difference between a rule and a dead end.
+    if (existing.length && existing[0].left_at) {
+      throw new GameError('left_already', 'you left that game, and it cannot be rejoined');
+    }
     if (existing.length) return { game, alreadyJoined: true };
 
     if (game.status === 'running') throw new GameError('already_started', 'That game has already started');

@@ -14,6 +14,7 @@ import { generateTicket } from '../games/tambola/ticket.js';
 import { makeRng } from '../utils/random.js';
 import { CLAIMS } from '../games/tambola/claims.js';
 import { taglineFor } from '../games/tambola/taglines.js';
+import { walkthrough } from './demo-walkthrough.js';
 
 export function demoPage({ lang = 'en' } = {}) {
   // A fixed seed: everyone who opens the page sees the same ticket, so a
@@ -24,13 +25,21 @@ export function demoPage({ lang = 'en' } = {}) {
   // The walk-through calls the top row in order, so Top Line completes on cue.
   const script = [...ticket.grid[0], 42, 17, 63].filter((n) => n !== null);
 
+  const wt = walkthrough();
+
   const data = JSON.stringify({
     ticket, script, hi,
     brand: config.brandName,
     wa: config.whatsapp.businessNumber,
+    // Served from src/media by express.static, which answers Range requests -
+    // without those a phone cannot seek, and some browsers refuse to start at
+    // all. The poster is what shows before anything is downloaded, so the page
+    // is never a black rectangle on a slow connection.
+    video: `${config.publicRoot}/public/media/${hi ? 'mastipe-demo-hi.mp4' : 'mastipe-demo.mp4'}`,
+    poster: `${config.publicRoot}/public/media/${hi ? 'mastipe-demo-hi-cover.png' : 'mastipe-demo-cover.png'}`,
     interval: config.game.drawIntervalSeconds,
     maxPlayers: config.game.maxPlayers,
-    prizes: CLAIMS.map((c) => ({ label: c.label, hint: c.hint })),
+    prizes: CLAIMS.map((c) => ({ key: c.key, label: c.label, hint: c.hint })),
     taglines: Object.fromEntries(script.map((n) => [n, taglineFor(n)])),
   });
 
@@ -50,9 +59,15 @@ export function demoPage({ lang = 'en' } = {}) {
 body{margin:0;background:var(--bg);color:var(--text);
   font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 .wrap{max-width:560px;margin:0 auto;padding:18px 14px 80px}
+/* 16:9 with a black ground, so a portrait phone shows letterboxing rather
+   than a jumping layout while the first frame loads. */
+.demo{width:100%;aspect-ratio:16/9;background:#000;border-radius:12px;display:block}
 h1{font-size:26px;margin:0 0 4px;color:var(--gold);letter-spacing:-.01em}
 h2{font-size:16px;margin:0 0 10px;color:var(--gold)}
 .lede{color:var(--dim);margin:0 0 20px}
+.langrow{display:flex;justify-content:flex-end;margin-bottom:4px}
+.lang{color:var(--gold);font-size:13px;text-decoration:none;border:1px solid var(--line);
+  border-radius:999px;padding:5px 12px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin:12px 0}
 .step{display:flex;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
 .step:first-of-type{border-top:0}
@@ -89,6 +104,7 @@ tr.win td{box-shadow:inset 0 0 0 2px var(--gold)}
 .prizes li{display:flex;gap:10px;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
 .prizes li:first-child{border-top:0}
 .prizes b{color:var(--gold);flex:none;width:96px}
+${wt.css}
 .prizes span{color:var(--dim)}
 </style>
 </head>
@@ -98,14 +114,17 @@ tr.win td{box-shadow:inset 0 0 0 2px var(--gold)}
 (function(){
   "use strict";
   var d = ${data};
+  var WT_HTML = ${JSON.stringify(wt.html)};
   var T = d.hi ? {
     title:'कैसे खेलें', lede:'तंबोला, सीधे व्हाट्सएप पर। कोई ऐप नहीं।',
     steps:'तीन चरणों में', watch:'देखिए यह कैसे चलता है', prizes:'छह इनाम',
-    play:'अभी खेलें', replay:'फिर से देखें', ready:'तैयार?'
+    play:'अभी खेलें', replay:'फिर से देखें', ready:'तैयार?',
+    video:'डेमो देखिए', videoNote:'आवाज़ चालू करके देखें।'
   } : {
     title:'How to play', lede:'Tambola, right on WhatsApp. No app to install.',
     steps:'Three steps', watch:'Watch how it works', prizes:'Six prizes',
-    play:'Play now on WhatsApp', replay:'Watch again', ready:'Ready?'
+    play:'Play now on WhatsApp', replay:'Watch again', ready:'Ready?',
+    video:'Watch the demo', videoNote:'Best with sound on.'
   };
 
   function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){
@@ -122,7 +141,29 @@ tr.win td{box-shadow:inset 0 0 0 2px var(--gold)}
   ];
 
   var h = '';
+  // A language switch on the page itself, not only on the marketing site.
+  //
+  // The bot has no notion of a player's language - players.locale exists but
+  // WhatsApp does not reliably tell us - so the link it sends is always the
+  // English one. Without this, a Hindi speaker arriving from WhatsApp has no
+  // route to the Hindi video at all. One tap solves it for everybody, whichever
+  // link they came in on.
+  h += '<div class="langrow">' +
+    '<a class="lang" href="?lang=' + (d.hi ? 'en' : 'hi') + '">' +
+    (d.hi ? 'View in English' : 'हिंदी में देखें') + '</a></div>';
+
   h += '<h1>' + T.title + '</h1><p class="lede">' + T.lede + '</p>';
+
+  // The video leads, because it is the fastest way to understand the game -
+  // the written steps below are for anyone who would rather read, or who is
+  // somewhere they cannot play sound.
+  h += '<div class="card"><h2>' + T.video + '</h2>' +
+    '<video class="demo" controls preload="none" playsinline ' +
+      'poster="' + esc(d.poster) + '">' +
+      '<source src="' + esc(d.video) + '" type="video/mp4">' +
+    '</video>' +
+    '<div class="muted" style="font-size:12.5px;margin-top:8px">' + T.videoNote + '</div>' +
+  '</div>';
 
   h += '<div class="card"><h2>' + T.steps + '</h2>' +
     steps.map(function(s,i){
@@ -131,10 +172,7 @@ tr.win td{box-shadow:inset 0 0 0 2px var(--gold)}
     }).join('') + '</div>';
 
   h += '<div class="card"><h2>' + T.watch + '</h2>' +
-    '<div class="callout"><div class="num" id="num">–</div><div class="tag" id="tag"></div></div>' +
-    '<div class="ticket"><table><tbody id="grid"></tbody></table></div>' +
-    '<div class="win-note" id="win"></div>' +
-    '<button class="btn ghost" id="replay">' + T.replay + '</button></div>';
+    WT_HTML + '</div>';
 
   h += '<div class="card"><h2>' + T.prizes + '</h2><ul class="prizes">' +
     d.prizes.map(function(p){
@@ -146,45 +184,12 @@ tr.win td{box-shadow:inset 0 0 0 2px var(--gold)}
 
   document.getElementById('app').innerHTML = h;
 
-  // ---- the walk-through ----
-  var marked = {};
-  function paint(){
-    var topRow = d.ticket.grid[0];
-    var won = topRow.filter(function(v){ return v !== null; })
-                    .every(function(v){ return marked[v]; });
-    document.getElementById('grid').innerHTML = d.ticket.grid.map(function(row,r){
-      return '<tr class="' + (r===0 && won ? 'win' : '') + '">' + row.map(function(v){
-        if (v === null) return '<td class="blank"></td>';
-        return '<td class="' + (marked[v] ? 'marked' : '') + '">' + v + '</td>';
-      }).join('') + '</tr>';
-    }).join('');
-    document.getElementById('win').textContent = won
-      ? (d.hi ? '🏆 टॉप लाइन! दावा करें।' : '🏆 Top Line — claim it!')
-      : '';
-  }
+// Runs inside this scope on purpose: the walkthrough reads the same d object the
+// rest of the page does, so the ticket it animates is the ticket shown above
+// and the prize it lights up is a real prize key. Its own body is wrapped in
+// an IIFE, so nothing leaks either way.
+${wt.js}
 
-  var timer = null;
-  function run(){
-    if (timer) clearInterval(timer);
-    marked = {};
-    paint();
-    document.getElementById('num').textContent = '–';
-    document.getElementById('tag').textContent = '';
-    var i = 0;
-    timer = setInterval(function(){
-      if (i >= d.script.length) { clearInterval(timer); return; }
-      var n = d.script[i++];
-      document.getElementById('num').textContent = n;
-      document.getElementById('tag').textContent = d.taglines[n] || '';
-      // Only numbers actually on this ticket get marked - which is the whole
-      // point a first-time player needs to understand.
-      if (d.ticket.numbers.indexOf(n) >= 0) marked[n] = true;
-      paint();
-    }, 1400);
-  }
-
-  document.getElementById('replay').onclick = run;
-  run();
 })();
 </script>
 </body>

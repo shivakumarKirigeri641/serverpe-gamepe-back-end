@@ -120,6 +120,15 @@ table.log tr:last-child td{border-bottom:0}
     '<div class="sub">' + esc(d.you.name) + (d.you.isHost ? ' (host)' : '') +
     ' &middot; ' + when(d.game.endedAt || d.game.startedAt) + '</div></div></div>';
 
+  // Said plainly, above the numbers. Without it the accuracy figure below
+  // reads as inattention rather than as a deliberate exit.
+  if (d.you.leftAt) {
+    h += '<div class="card" style="border-color:rgba(192,75,75,.45)">' +
+      '<b>You left this game early.</b> ' +
+      '<span class="sub">Everything below covers the whole game — the numbers ' +
+      'called after you left were never yours to mark.</span></div>';
+  }
+
   h += '<div class="big">' +
     kpi(acc.correct + '/' + acc.total, 'Marked correctly') +
     kpi(pct + '%', 'Accuracy') +

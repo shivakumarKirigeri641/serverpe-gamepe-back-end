@@ -12,8 +12,8 @@
 import { query } from '../db/pool.js';
 import { log } from '../utils/logger.js';
 import { config } from '../config/env.js';
-import { signBoardToken } from '../utils/code.js';
-import { sendText, sendButtons } from '../whatsapp/client.js';
+import { signBoardToken, feedbackUrl } from '../utils/code.js';
+import { sendText, sendCtaUrl } from '../whatsapp/client.js';
 import { displayNameFor, setState } from './player.service.js';
 import { getResults } from './claim.service.js';
 import { recordEvent } from './tracking.service.js';
@@ -94,20 +94,28 @@ export async function announceGameOver(gameId) {
       await sendText(player.wa_id, summaryText({ game, results, mine, won, name }));
       await sendText(player.wa_id, copy.gameReport(game.code, reportUrl(game.id, player.id)));
 
-      await sendButtons(
+      // One tap to a proper form, rather than three buttons and a follow-up.
+      //
+      // The old flow asked for a star on WhatsApp and then hoped for a comment
+      // in a second message - which meant the rating and the words arrived
+      // separately, and most people stopped after the star. A form collects
+      // both in one go, gives room to actually write something, and is the
+      // only version that produces text worth publishing as a testimonial.
+      await sendCtaUrl(
         player.wa_id,
-        `How was that game? Your rating helps us make it better.`,
-        [
-          { id: FEEDBACK_BUTTONS.RATE_5, title: '⭐ Loved it' },
-          { id: FEEDBACK_BUTTONS.RATE_3, title: '🙂 It was ok' },
-          { id: FEEDBACK_BUTTONS.RATE_1, title: '😕 Not great' },
-        ],
-        { footer: 'Tap one - you can add a comment after' },
+        `How was that game? Your rating helps us make it better - and the nice ` +
+          `ones may appear on our site.`,
+        {
+          displayText: 'Provide Feedback',
+          url: feedbackUrl(player.id, gameId),
+          footer: 'Takes about twenty seconds',
+        },
       );
 
-      // Park them in the feedback state so a free-text reply becomes a comment
-      // rather than falling through to "I didn't understand that".
-      await setState(player.id, STATES.AWAITING_FEEDBACK, { gameId, code: game.code });
+      // Back to the menu, not parked in a feedback state. The rating is being
+      // given in the browser now, so treating their next WhatsApp message as a
+      // comment would swallow a perfectly ordinary "hi".
+      await setState(player.id, STATES.MENU, {});
       sent++;
     } catch (err) {
       log.warn('could not send game summary', { playerId: player.id, message: err.message });
@@ -238,7 +246,7 @@ export async function playerReport(gameId, playerId) {
   if (!game) return null;
 
   const { rows: people } = await query(
-    `SELECT p.id, p.wa_id, p.display_name, gp.is_host, gp.joined_at
+    `SELECT p.id, p.wa_id, p.display_name, gp.is_host, gp.joined_at, gp.left_at
        FROM game_players gp JOIN players p ON p.id = gp.player_id
       WHERE gp.game_id = $1 AND gp.player_id = $2`,
     [gameId, playerId],
@@ -290,7 +298,16 @@ export async function playerReport(gameId, playerId) {
       drawInterval: game.draw_interval_seconds,
     },
     host: host.rows[0] ? displayNameFor(host.rows[0]) : null,
-    you: { name: me, isHost: people[0].is_host, joinedAt: people[0].joined_at },
+    you: {
+      name: me,
+      isHost: people[0].is_host,
+      joinedAt: people[0].joined_at,
+      // Set if they walked out before the end. The report still shows every
+      // number that was called - what changes is that the numbers after this
+      // moment were never theirs to mark, and the page says so rather than
+      // letting the accuracy figure quietly imply they stopped paying attention.
+      leftAt: people[0].left_at,
+    },
     ticket: entry[0]?.ticket ?? null,
     timeline: timeline.map((t) => ({
       seq: t.seq,

@@ -11,9 +11,11 @@ import { config } from '../config/env.js';
 import { verifyBoardToken, inviteUrl } from '../utils/code.js';
 import { boardPage } from './board-page.js';
 import { reportPage } from './report-page.js';
-import { playerReport } from '../services/gameover.service.js';
+import { historyPage } from './history-page.js';
+import { playerReport, announceGameAbandoned } from '../services/gameover.service.js';
+import { playerHistory } from '../services/history.service.js';
 import {
-  getGameById, getLobby, getEntry, isPlayerInGame, startGame, GameError,
+  getGameById, getLobby, getEntry, isPlayerInGame, startGame, leaveGame, GameError,
 } from '../services/game.service.js';
 import { getPlayerById, displayNameFor } from '../services/player.service.js';
 import { getDraws, getAnswers, recordAnswer, answerProgress } from '../services/round.service.js';
@@ -153,6 +155,58 @@ export function boardRoutes() {
   }));
 
   /**
+   * The player walks out.
+   *
+   * Irreversible on purpose: their seat is released, their ticket is done, and
+   * joinGame refuses them afterwards. The board asks for confirmation before
+   * calling this, because there is no undo.
+   *
+   * If that drops a running game below the minimum, leaveGame ends it for
+   * everyone - so the people still playing are told immediately, and the
+   * WhatsApp notice goes out on the same path an ordinary abandonment uses.
+   */
+  router.post('/board/:token/leave', resolve, wrap(async (req, res) => {
+    const name = displayNameFor(req.player);
+    let result;
+    try {
+      result = await leaveGame({ gameId: req.game.id, playerId: req.player.id });
+    } catch (err) {
+      if (err instanceof GameError) return res.status(400).json({ error: err.message });
+      throw err;
+    }
+
+    await recordEvent({
+      type: 'game.left', source: 'board', req,
+      playerId: req.player.id, gameId: req.game.id,
+      properties: {
+        remaining: result.remaining,
+        abortedTheGame: result.aborted,
+        numbersCalled: req.game.cursor,
+        status: req.game.status,
+      },
+    });
+
+    if (result.aborted) {
+      broadcast(req.game.id, 'game_over', { reason: 'abandoned', leaver: name });
+      announceGameAbandoned(req.game.id, { leaverName: name }).catch(() => {});
+    } else {
+      // Told by name, and separately from the state refresh. A player count
+      // that quietly drops from 5 to 4 mid-game reads as a bug; "Priya left
+      // the game" reads as what happened. The remaining count rides along so
+      // the others can see how close the table is to ending.
+      broadcast(req.game.id, 'left', { name, remaining: result.remaining });
+      broadcast(req.game.id, 'state_stale', {});
+    }
+
+    log.info('player left from the board', {
+      gameId: req.game.id, playerId: req.player.id,
+      remaining: result.remaining, aborted: result.aborted,
+    });
+
+    res.json({ ok: true, remaining: result.remaining, aborted: result.aborted });
+  }));
+
+  /**
    * The per-player report, on the same signed token as the board. Readable
    * long after the game - it is the link WhatsApp sends when a game ends.
    */
@@ -172,6 +226,30 @@ export function boardRoutes() {
       playerId: ids.playerId, gameId: ids.gameId,
     });
     res.type('html').send(reportPage(report));
+  }));
+
+  /**
+   * The player's whole play history — every game, ever.
+   *
+   * Signed with gameId 0, because it belongs to the player rather than to any
+   * one game. The token still names a player, so this is no more public than
+   * the per-game report: a link only works for the person it was issued to.
+   */
+  router.get('/history/:token', wrap(async (req, res) => {
+    const ids = verifyBoardToken(req.params.token);
+    if (!ids) {
+      return res.status(403).type('html')
+        .send(errorPage('This history link is not valid.', 'Send *hi* on WhatsApp for a fresh one.'));
+    }
+    const history = await playerHistory(ids.playerId);
+    if (!history) {
+      return res.status(404).type('html')
+        .send(errorPage('We could not find that player.', 'The record may have been cleared.'));
+    }
+    await recordEvent({
+      type: 'history.opened', source: 'board', req, playerId: ids.playerId,
+    });
+    res.type('html').send(historyPage(history));
   }));
 
   router.post('/board/:token/claim', resolve, wrap(async (req, res) => {

@@ -27,6 +27,22 @@ export const pool = new pg.Pool({
   // A runaway query must not be allowed to hold a connection forever and
   // starve the pool during a live game.
   statement_timeout: 10_000,
+
+  /**
+   * Pin the session timezone instead of inheriting the server's default.
+   *
+   * Every timestamp column in the schema is `timestamptz`, so the INSTANT
+   * stored is always correct no matter what this is set to - the timezone
+   * only decides how a value is RENDERED when it comes back.
+   *
+   * That is exactly why it must not be left to chance. This dev machine's
+   * Postgres happens to default to Asia/Calcutta; a managed production
+   * instance almost always defaults to UTC. Without this line the same row
+   * would read 18:26 here and 12:56 in production, and every timestamp an
+   * operator looked at in the admin panel would be five and a half hours out
+   * with nothing to indicate it.
+   */
+  options: `-c timezone=${config.timezone}`,
 });
 
 pool.on('error', (err) => {

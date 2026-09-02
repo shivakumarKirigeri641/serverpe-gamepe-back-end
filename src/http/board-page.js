@@ -153,36 +153,94 @@ header{display:flex;align-items:center;gap:10px;padding:6px 2px 12px}
 }
 #countdown .cap{margin-top:22px;text-align:center;color:#f7dfa5;font-size:15px;letter-spacing:.04em}
 
-/* ---- "that was the last number" ----------------------------------------
-   Shown when the 90th number has been called and nobody took the Full House.
-   It is a full-screen moment rather than a line on the results card because
-   the game ending on the numbers running out is quiet - there is no winner to
-   announce - and without it the board would simply swap to a list of prizes
-   with no sense that anything had concluded. */
-#allcalled{
-  position:fixed;inset:0;z-index:60;display:grid;place-items:center;padding:24px;
-  background:radial-gradient(circle at 50% 42%,rgba(92,15,43,.97),rgba(12,11,15,.99) 72%);
-  backdrop-filter:blur(3px);animation:fadein .4s ease-out;
+/* ---- leaving the game --------------------------------------------------
+   Deliberately quiet. Exit is a real action with no undo, but it is not the
+   thing a player came here to do, so it does not get to look like one of the
+   answer buttons. Small, muted, and at the bottom - findable when wanted,
+   invisible when not. */
+.exitrow{display:flex;justify-content:center;margin:18px 0 4px}
+.exitbtn{
+  background:none;border:1px solid var(--line);border-radius:10px;
+  color:var(--dim);font:600 13px system-ui;padding:9px 16px;cursor:pointer;
+}
+.exitbtn:active{transform:scale(.97)}
+
+/* The confirmation. A modal is the right shape here and the wrong shape for
+   the end of a game: this one is asking a question that needs an answer, and
+   the game genuinely should not continue behind it. */
+/* No backdrop-filter here on purpose. The blur is decorative, WhatsApp's
+   in-app browser renders it inconsistently, and where it misbehaves it makes
+   the dialog itself look half-transparent - which is worse than no blur at all. A
+   plain 92% ground does the job everywhere. */
+#leaveask{
+  position:fixed;inset:0;z-index:70;display:grid;place-items:center;padding:22px;
+  background:rgba(10,9,13,.92);animation:fadein .2s ease-out;
 }
 @keyframes fadein{from{opacity:0}to{opacity:1}}
-#allcalled .inner{text-align:center;max-width:340px}
-#allcalled .mark{font-size:56px;line-height:1;animation:burst .6s cubic-bezier(.2,1.5,.35,1)}
-#allcalled h2{margin:14px 0 6px;font:800 27px/1.2 ui-rounded,system-ui,sans-serif;color:var(--gold)}
-#allcalled .sub{color:#f7dfa5;font-size:15px;line-height:1.55}
-#allcalled .count{
-  margin-top:22px;font-size:13.5px;color:var(--dim);
-  display:flex;align-items:center;gap:9px;justify-content:center;
+#leaveask .box{
+  background:var(--panel);border:1px solid var(--line);border-radius:16px;
+  padding:20px;max-width:360px;width:100%;
 }
-#allcalled .count .n{
-  width:26px;height:26px;border-radius:50%;flex:none;display:grid;place-items:center;
+#leaveask h3{margin:0 0 10px;font:800 19px/1.3 system-ui;color:var(--text)}
+#leaveask p{margin:0 0 10px;font-size:14px;line-height:1.6;color:var(--dim)}
+#leaveask .warn{
+  background:rgba(192,75,75,.1);border:1px solid rgba(192,75,75,.35);
+  border-radius:10px;padding:11px 13px;font-size:13.5px;color:#f0b8b8;margin:12px 0 4px;
+}
+#leaveask .row{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:16px}
+#leaveask button{padding:13px 10px;border-radius:11px;font:700 14px system-ui;cursor:pointer;border:1px solid var(--line)}
+#leaveask .stay{background:var(--gold);border-color:var(--gold);color:#2b2118}
+#leaveask .go{background:transparent;color:var(--no);border-color:rgba(192,75,75,.5)}
+
+/* Someone else walked out. */
+.leftnote{
+  background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:12px;
+  padding:13px;margin:10px 0;font-size:14px;color:var(--dim);text-align:center;
+}
+.leftnote b{color:var(--text)}
+
+/* ---- how the game ended -------------------------------------------------
+   The first thing on the results screen, and always present: whatever else
+   happened, a player is owed a plain sentence saying why the game stopped.
+
+   This deliberately replaced a full-screen overlay. Covering the board the
+   instant the last number lands reads as an error dialog, not an ending - it
+   arrives without warning, hides what the player was looking at, and has to be
+   dismissed. An inline banner says the same thing, in the same place the
+   results are about to appear, without taking the screen away from anyone. */
+.ended{
+  background:linear-gradient(160deg,rgba(139,30,63,.5),rgba(92,15,43,.55));
+  border:1px solid rgba(212,165,55,.35);border-radius:14px;
+  padding:16px 16px 14px;margin:10px 0;
+}
+.ended .label{
+  font:700 11px/1 system-ui;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--gold);opacity:.9;
+}
+.ended .why{margin-top:9px;font:600 16px/1.5 system-ui;color:var(--text)}
+.ended .why b{color:var(--gold)}
+/* The return strip. Part of the banner, never on top of it. */
+.ended .ret{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  margin-top:14px;padding-top:12px;border-top:1px solid rgba(212,165,55,.2);
+  font-size:13px;color:var(--dim);
+}
+/* [hidden] only sets display:none at the lowest specificity, so the rule
+   above would beat it and leave an empty strip with a divider above it. */
+.ended .ret[hidden]{display:none}
+.ended .ret .n{
+  width:24px;height:24px;border-radius:50%;flex:none;display:grid;place-items:center;
   background:rgba(212,165,55,.16);border:1px solid rgba(212,165,55,.45);
-  font:700 13px ui-monospace,Menlo,monospace;color:var(--gold);
+  font:700 12px ui-monospace,Menlo,monospace;color:var(--gold);
 }
-/* Nobody is ever trapped in a screen that is about to navigate away. */
-#allcalled .stay{
-  display:inline-block;margin-top:16px;font-size:13px;color:var(--dim);
-  text-decoration:underline;background:none;border:0;cursor:pointer;
+.ended .ret .stay{
+  margin-left:auto;font-size:13px;color:var(--dim);text-decoration:underline;
+  background:none;border:0;cursor:pointer;padding:4px 0;
 }
+/* The results fade in rather than snapping into place, so the change of
+   screen reads as the game finishing rather than something going wrong. */
+.overview-in{animation:easein .45s ease-out}
+@keyframes easein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 
 /* The moment it hits zero. */
 #countdown .go{
@@ -280,6 +338,12 @@ details.called[open] summary::after{transform:rotate(180deg)}
   flex:none;padding:9px 12px;border-radius:9px;border:1px solid var(--line);
   background:var(--panel);color:var(--dim);font:600 13px system-ui;cursor:pointer;white-space:nowrap;
 }
+/* A prize you can now claim glows. This is deliberate, and it is deliberately
+   NOT the same as hinting a number.
+   The board never says whether the number being called is on your ticket -
+   spotting that is the game. Whether a completed pattern is worth a prize is
+   bookkeeping, and a player who has genuinely won Top Line should not lose it
+   because they did not know the rule. Marking is skill; claiming is not. */
 .claims button.able{border-color:var(--gold);color:var(--gold);
   animation:glow 1.6s ease-in-out infinite}
 @keyframes glow{0%,100%{box-shadow:0 0 0 0 rgba(212,165,55,.35)}50%{box-shadow:0 0 0 6px rgba(212,165,55,0)}}
@@ -402,6 +466,15 @@ details.called[open] summary::after{transform:rotate(180deg)}
       paintWaiting();
     });
 
+    // Someone walked out. Named, so a player count dropping on its own does
+    // not read as something breaking.
+    es.addEventListener('left', function(e){
+      var d = JSON.parse(e.data || '{}');
+      toast((d.name || 'A player') + ' left the game' +
+        (d.remaining ? ' · ' + d.remaining + ' still playing' : ''));
+      refresh();
+    });
+
     es.addEventListener('claim', function(e){
       var c = JSON.parse(e.data);
       toast(c.winner + ' claimed ' + c.label + '!');
@@ -484,9 +557,15 @@ details.called[open] summary::after{transform:rotate(180deg)}
   }
 
   // ---- rendering ----
+  // Whether this page ever saw the game actually being played. It separates
+  // "the game just ended in front of me" from "I opened a board that finished
+  // an hour ago" - which want different endings. See allCalled().
+  var sawItRunning = false;
+
   function render(force){
     if (!state) return;
     var key = state.game.status;
+    if (key === 'running') sawItRunning = true;
     if (key === 'lobby') renderLobby();
     else if (key === 'running') renderGame(force);
     else renderOver();
@@ -611,9 +690,11 @@ details.called[open] summary::after{transform:rotate(180deg)}
     '</div>' +
     '<div id="waitBox"></div>' +
     '<div class="nudge" id="nudge"></div>' +
-    ticketHtml() + calledHtml();
+    ticketHtml() + calledHtml() +
+    '<div class="exitrow"><button class="exitbtn" id="exitBtn">Exit game</button></div>';
 
     setView(html, 'game');
+    wireExit();
     wireAnswers();
     // Also on first paint, not only on later patches - otherwise the panel
     // renders as an empty bar until the second number arrives.
@@ -631,16 +712,38 @@ details.called[open] summary::after{transform:rotate(180deg)}
     var r = state.results || {prizes:[], players:[]};
     var fullHouse = state.game.endedReason === 'full_house';
     var abandoned = state.game.endedReason === 'abandoned';
-    var reason = fullHouse ? 'Full House! That is game.'
-      : abandoned ? 'Too few players were left to carry on.'
-      : 'All 90 numbers called.';
-
     // Who took the Full House - from the results, so a reload still shows it.
-    var champ = (r.prizes.filter(function(p){ return p.key === 'full_house'; })[0] || {}).winner
+    var winner = (r.prizes.filter(function(p){ return p.key === 'full_house'; })[0] || {}).winner
       || (lastWinner && lastWinner.winner) || null;
+
+    // The plain sentence. It names the player who ended it, because "Full
+    // House! That is game." tells someone who looked away for ten seconds
+    // nothing at all about what they missed.
+    var reason;
+    if (fullHouse) {
+      reason = winner
+        ? (state.you && winner === state.you.name
+            ? '<b>You</b> completed a full ticket. That is Full House, and the game ends here.'
+            : '<b>' + esc(winner) + '</b> completed a full ticket. That is Full House, and the game ends here.')
+        : 'Someone completed a full ticket. That is Full House, and the game ends here.';
+    } else if (abandoned) {
+      reason = (lastWinner && lastWinner.leaver)
+        ? '<b>' + esc(lastWinner.leaver) + '</b> left, which left too few players to carry on.'
+        : 'Too few players were left to carry on.';
+    } else {
+      reason = 'All <b>90 numbers</b> have been called. Nobody completed a full ticket.';
+    }
+
+    var champ = winner;
     var youWon = champ && state.you && champ === state.you.name;
 
-    var html = '';
+    // The banner leads, so the reason is read before anything else. Whether it
+    // also counts down to WhatsApp is decided further down.
+    var html = '<div class="ended overview-in">' +
+      '<div class="label">Game over</div>' +
+      '<div class="why">' + reason + '</div>' +
+      '<div class="ret" id="retStrip" hidden></div>' +
+    '</div>';
     // No trophy and no confetti for an abandoned game - nobody won.
     if (abandoned) {
       html += '<div class="card" style="text-align:center">' +
@@ -662,8 +765,7 @@ details.called[open] summary::after{transform:rotate(180deg)}
       '</div>';
     }
 
-    html += '<div class="card"><h2>Game over</h2>' +
-      '<div class="muted">' + esc(reason) + '</div>' +
+    html += '<div class="card"><h2>Prizes</h2>' +
       '<ul class="prizes">' + r.prizes.map(function(p){
         return '<li class="' + (p.winner ? '' : 'none') + '">' + esc(p.label) +
           '<b>' + esc(p.winner || 'unclaimed') + '</b></li>';
@@ -694,63 +796,167 @@ details.called[open] summary::after{transform:rotate(180deg)}
     setView(html, 'over');
     if (fullHouse && champ && !abandoned) confetti();
 
-    // The 90th number has been called and no one completed a ticket. Say so
-    // properly, then take them back to WhatsApp where the report is waiting.
-    if (!fullHouse && !abandoned) allCalled();
+    // Offer the trip back to WhatsApp only to a player who was actually here
+    // when the numbers ran out. Someone opening this board later - from an old
+    // message, or the "See my report" link - came deliberately to READ the
+    // results, and bouncing them out would be the opposite of what they asked
+    // for.
+    if (!fullHouse && !abandoned && sawItRunning) offerReturn();
   }
 
   /**
-   * The end-of-numbers moment, then back to WhatsApp by itself.
+   * Counts down to WhatsApp, inside the game-over banner.
    *
-   * Shown once per page: overShown stops a reconnect or a visibility resync
-   * from replaying it over a player who is reading their results.
+   * This used to be a full-screen overlay and it was the wrong shape for the
+   * moment. The game ending is not an interruption to be acknowledged - it is
+   * the thing the player has been waiting twenty minutes for. Covering the
+   * board with a modal the instant the last number lands reads as an error
+   * dialog: it arrives unannounced, hides what they were looking at, and has
+   * to be dismissed before they can see their own results.
    *
-   * The redirect is deliberately escapable. WhatsApp's in-app browser is where
-   * most of these games are played and it does not always honour a scripted
-   * navigation, so the results, the report link and the manual button all stay
-   * underneath — the overlay is the nice path, never the only one.
+   * So the countdown lives in the banner instead. Nothing is covered, nothing
+   * has to be dismissed, and a player who wants to sit and read their report
+   * taps "Stay here" once. Runs at most once per page - a reconnect or a
+   * visibility resync must not restart it under someone mid-read.
    */
-  var overShown = false;
-  function allCalled(){
-    if (overShown) return;
-    overShown = true;
+  var returnOffered = false;
+  function offerReturn(){
+    if (returnOffered) return;
+    returnOffered = true;
 
-    var secs = 6;
-    var el = document.createElement('div');
-    el.id = 'allcalled';
-    el.innerHTML =
-      '<div class="inner">' +
-        '<div class="mark">🎱</div>' +
-        '<h2>That is all 90</h2>' +
-        '<div class="sub">Every number has been called, so the game ends here. ' +
-          'Nobody completed a full ticket this time.</div>' +
-        '<div class="count"><span class="n" id="acN">' + secs + '</span>' +
-          '<span>Taking you back to WhatsApp…</span></div>' +
-        '<button class="stay" id="acStay">Stay and see the results</button>' +
-      '</div>';
-    document.body.appendChild(el);
+    var strip = document.getElementById('retStrip');
+    if (!strip) return;
+
+    var secs = 8;
+    strip.hidden = false;
+    strip.innerHTML =
+      '<span class="n" id="retN">' + secs + '</span>' +
+      '<span>Taking you back to WhatsApp, where your report is waiting.</span>' +
+      '<button class="stay" id="retStay">Stay here</button>';
 
     var timer = null;
-    var close = function(){
+    var stop = function(){
       if (timer) clearInterval(timer);
       timer = null;
-      if (el.parentNode) el.parentNode.removeChild(el);
+      strip.hidden = true;
     };
 
-    document.getElementById('acStay').onclick = close;
+    document.getElementById('retStay').onclick = stop;
 
     timer = setInterval(function(){
       secs--;
-      var n = document.getElementById('acN');
+      var n = document.getElementById('retN');
       if (n) n.textContent = Math.max(0, secs);
       if (secs > 0) return;
 
-      close();
+      stop();
       var number = state.businessNumber || '';
       // With no business number configured there is nowhere to send them, so
       // the results simply stay on screen rather than a broken wa.me link.
       if (number) location.href = 'https://wa.me/' + number;
     }, 1000);
+  }
+
+  // ---- leaving ----
+
+  /**
+   * Wires the Exit button. Re-run on every game render, because setView
+   * replaces the node and an old handler would point at a detached element.
+   */
+  function wireExit(){
+    var b = document.getElementById('exitBtn');
+    if (b) b.onclick = askToLeave;
+  }
+
+  /**
+   * Asks before doing something with no undo.
+   *
+   * The warning names all three consequences, because each one surprises
+   * somebody: the ticket is forfeited, the game cannot be rejoined, and - the
+   * one nobody expects - leaving can end the game for everybody else if it
+   * drops the table below two players. Someone who would not have left had
+   * they known that deserves to know it here.
+   */
+  function askToLeave(){
+    if (document.getElementById('leaveask')) return;
+
+    var others = Math.max(0, (state.players ? state.players.length : 1) - 1);
+    var wouldEnd = others < 2;
+
+    var el = document.createElement('div');
+    el.id = 'leaveask';
+    el.innerHTML =
+      '<div class="box" role="dialog" aria-modal="true">' +
+        '<h3>Leave this game?</h3>' +
+        '<p>Your ticket is forfeited and any prizes still to come are out of reach.</p>' +
+        '<div class="warn">' +
+          '<b>You cannot rejoin.</b> This game is closed to you once you leave, ' +
+          'even if you still have the link.' +
+          (wouldEnd
+            ? '<br><br>You are one of the last players. Leaving now <b>ends the game ' +
+              'for everyone still playing</b>.'
+            : '') +
+        '</div>' +
+        '<div class="row">' +
+          '<button class="stay" id="leaveNo">Keep playing</button>' +
+          '<button class="go" id="leaveYes">Leave</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(el);
+
+    var close = function(){ if (el.parentNode) el.parentNode.removeChild(el); };
+    document.getElementById('leaveNo').onclick = close;
+
+    // A tap outside the box is a "no". A tap inside must not be.
+    el.onclick = function(ev){ if (ev.target === el) close(); };
+
+    document.getElementById('leaveYes').onclick = function(){
+      var go = document.getElementById('leaveYes');
+      go.disabled = true; go.textContent = 'Leaving…';
+      post('/leave', {}).then(function(r){
+        close();
+        if (r.status !== 200) { toast((r.body && r.body.error) || 'Could not leave'); return; }
+        leftTheGame(r.body);
+      });
+    };
+  }
+
+  /**
+   * What this player sees after walking out.
+   *
+   * The stream is closed first. Without that the board would keep receiving
+   * draws for a game this player is no longer in and paint them over this
+   * screen - and the server would go on holding a connection for a seat that
+   * no longer exists.
+   */
+  function leftTheGame(result){
+    if (es) { es.close(); es = null; }
+    if (tick) clearInterval(tick);
+    hideCountdown();
+    claimbar.classList.add('hidden');
+    setConn('off', 'you left this game');
+
+    var number = state.businessNumber || '';
+    setView(
+      '<div class="card" style="text-align:center">' +
+        '<div style="font-size:38px;line-height:1;margin-bottom:6px">👋</div>' +
+        '<h2>You have left the game</h2>' +
+        '<div class="muted">' +
+          (result && result.aborted
+            ? 'You were one of the last players, so the game has ended for everyone.'
+            : 'The others are still playing. This game cannot be rejoined.') +
+        '</div>' +
+        (number
+          ? '<a class="btn" style="display:block;margin-top:14px;text-decoration:none" ' +
+            'href="https://wa.me/' + number + '">Back to WhatsApp</a>'
+          : '') +
+        '<div class="muted" style="font-size:13px;margin-top:12px">' +
+          'It is on your record either way - your report and your play history ' +
+          'both show the numbers called up to the moment you left.' +
+        '</div>' +
+      '</div>',
+      'left',
+    );
   }
 
   /** A short burst of drawn confetti. No asset request, no library. */

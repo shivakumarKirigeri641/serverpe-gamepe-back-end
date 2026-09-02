@@ -67,10 +67,15 @@ textarea{resize:vertical;min-height:110px}
 
 /* stars */
 .stars{display:flex;gap:6px;justify-content:center;margin:6px 0 2px}
+/* The colour has to be set explicitly on both states. A <button> does not
+   inherit body colour in every mobile browser, so without this the star glyph
+   fell back to near-black on a near-black card: the rating label said "Loved
+   it!" while the stars looked untouched. */
 .stars button{flex:1;background:transparent;border:1px solid var(--line);border-radius:12px;
-  padding:12px 0;font-size:26px;cursor:pointer;line-height:1;transition:transform .1s}
+  padding:12px 0;font-size:26px;cursor:pointer;line-height:1;color:var(--dim);
+  transition:transform .1s,color .15s,border-color .15s,background .15s}
 .stars button:active{transform:scale(.94)}
-.stars button.on{border-color:var(--gold);background:rgba(212,165,55,.12)}
+.stars button.on{border-color:var(--gold);background:rgba(212,165,55,.12);color:var(--gold)}
 .rating-label{text-align:center;color:var(--gold);font-weight:700;min-height:1.4em;font-size:14px}
 ${extraCss}
 </style>

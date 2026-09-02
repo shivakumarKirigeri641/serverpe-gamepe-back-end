@@ -126,6 +126,12 @@ export async function live() {
     SELECT
       (SELECT count(*) FROM games WHERE status='running')                       AS games_running,
       (SELECT count(*) FROM games WHERE status='lobby')                         AS games_in_lobby,
+      -- Distinct people hosting a live or waiting game. Not interchangeable
+      -- with games_running: one host runs one game at a time today, but that
+      -- is a product rule, not a database one, and the day it changes this
+      -- number should not quietly become wrong.
+      (SELECT count(DISTINCT host_player_id) FROM games
+        WHERE status IN ('running','lobby'))                                    AS hosts_live,
       (SELECT count(*) FROM game_players gp JOIN games g ON g.id=gp.game_id
         WHERE g.status='running' AND gp.left_at IS NULL)                        AS players_in_game,
       (SELECT count(*) FROM game_players gp JOIN games g ON g.id=gp.game_id
@@ -137,7 +143,25 @@ export async function live() {
       (SELECT count(*) FROM messages
         WHERE direction='out' AND created_at > now() - interval '1 hour')       AS sent_1h,
       (SELECT count(*)::int FROM support_tickets
-        WHERE status IN ('open','in_progress'))                                  AS tickets_open
+        WHERE status IN ('open','in_progress'))                                  AS tickets_open,
+
+      -- The Live page has always rendered this and it was never selected, so
+      -- it read "none failed" no matter how badly sending was going.
+      (SELECT count(*)::int FROM messages
+        WHERE direction='out' AND status='failed'
+          AND created_at > now() - interval '1 hour')                            AS failed_1h,
+
+      -- Scheduler health, and the only number here that is meaningful at a
+      -- one-second cadence. A game is "due" the moment its next_draw_at has
+      -- passed; the tick should clear it within a second, so anything above
+      -- zero that STAYS above zero means draws are running late and every
+      -- player on the platform is watching a board that has stopped moving.
+      (SELECT count(*)::int FROM games
+        WHERE status='running' AND next_draw_at <= now())                        AS draws_due_now,
+      (SELECT count(*)::int FROM draws
+        WHERE drawn_at > now() - interval '1 minute')                            AS drawn_last_minute,
+      (SELECT count(*)::int FROM draws
+        WHERE drawn_at > now() - interval '1 hour')                              AS drawn_last_hour
   `);
 
   const games = await query(`
