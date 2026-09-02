@@ -136,6 +136,23 @@ their target on startup; read that line.
 
 ---
 
+## Running it under pm2
+
+```bash
+pm2 start ecosystem.config.cjs
+pm2 save && pm2 startup      # survive a reboot
+pm2 logs mastipe-api
+```
+
+The config is committed on purpose. A hand-written pm2 entry is how a
+deployment ended up pointing at `dist/index.js`, a path that has never
+existed here — **there is no build step**, and `src/index.js` is the program.
+
+`instances: 1` in that file is a correctness constraint, not a capacity
+choice. Live board updates live in one process's memory, so cluster mode
+would leave most of a table watching a board that stopped moving. See the
+last section of this document.
+
 ## Every command
 
 | Command | Does |
