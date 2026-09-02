@@ -8,6 +8,7 @@
 -- Switch to additive migrations once there are real players to protect.
 -- ===========================================================================
 
+DROP TABLE IF EXISTS app_settings       CASCADE;
 DROP TABLE IF EXISTS admin_login_attempts CASCADE;
 DROP TABLE IF EXISTS admin_sessions     CASCADE;
 DROP TABLE IF EXISTS block_history      CASCADE;
@@ -293,7 +294,11 @@ CREATE INDEX analytics_events_time_idx   ON analytics_events (occurred_at DESC);
 
 CREATE TABLE feedback (
   id          bigserial   PRIMARY KEY,
-  game_id     bigint      REFERENCES games(id) ON DELETE SET NULL,
+  -- CASCADE, not SET NULL. With SET NULL, deleting two of one player's games
+  -- collapses both their feedback rows onto (player_id, NULL) and trips the
+  -- uniqueness below. Feedback about a game that no longer exists is orphaned
+  -- anyway, so it goes with it.
+  game_id     bigint      REFERENCES games(id) ON DELETE CASCADE,
   player_id   bigint      NOT NULL REFERENCES players(id) ON DELETE CASCADE,
   rating      int         CHECK (rating BETWEEN 1 AND 5),
   comment     text,
@@ -304,6 +309,11 @@ CREATE TABLE feedback (
   created_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX feedback_created_idx ON feedback (created_at DESC);
+-- One row per player per game: a second rating corrects the first instead of
+-- stacking duplicates. COALESCE, because game_id is nullable for feedback that
+-- is not about a specific game.
+CREATE UNIQUE INDEX feedback_one_per_player_game
+  ON feedback (player_id, COALESCE(game_id, 0));
 
 
 -- --- Moderation ------------------------------------------------------------
@@ -362,3 +372,23 @@ CREATE TABLE admin_login_attempts (
   attempted_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX admin_login_attempts_idx ON admin_login_attempts (request_ip, attempted_at DESC);
+
+
+-- --- Editable settings ------------------------------------------------------
+
+/*
+ * Values an operator can change from the panel without a redeploy.
+ *
+ * Deliberately key/value rather than a column per setting: these are rare,
+ * unrelated, and each one would otherwise be a schema change. Anything absent
+ * here falls back to the matching variable in .env, so a fresh database
+ * behaves exactly like the environment says it should.
+ *
+ * NOT wiped by the 'clean up database' action - configuration is not game data.
+ */
+CREATE TABLE app_settings (
+  key        text        PRIMARY KEY,
+  value      text,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by text
+);

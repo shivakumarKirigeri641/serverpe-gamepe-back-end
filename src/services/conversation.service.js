@@ -21,17 +21,11 @@ import {
   createGame, joinGame, getGameByCode, findActiveGameForPlayer, GameError,
 } from './game.service.js';
 import { recordEvent } from './tracking.service.js';
+import { STATES } from './conversation-states.js';
+import { FEEDBACK_BUTTONS, reportUrl } from './gameover.service.js';
+import { saveRating, saveComment } from './feedback.service.js';
 
-export const STATES = {
-  NEW: 'new',
-  AWAITING_CONSENT: 'awaiting_consent',
-  MENU: 'menu',
-  AWAITING_PLAYER_COUNT: 'awaiting_player_count',
-  AWAITING_PLAN: 'awaiting_plan',
-  AWAITING_JOIN_CODE: 'awaiting_join_code',
-  IN_LOBBY: 'in_lobby',
-  IN_GAME: 'in_game',
-};
+export { STATES } from './conversation-states.js';
 
 const GREETINGS = /^(hi|hii+|hey|hello|start|menu|namaste|namaskar)\b/i;
 const JOIN_COMMAND = /^join\s+([a-z0-9]{4,10})$/i;
@@ -107,7 +101,7 @@ async function showMenu(player) {
  */
 async function handleConsent(player, state) {
   await recordConsent(player.id);
-  await recordEvent({ type: 'consent_given', source: 'whatsapp', playerId: player.id });
+  await recordEvent({ type: 'consent.accepted', source: 'whatsapp', playerId: player.id });
   await sendText(player.wa_id, copy.consentDone());
 
   const pendingCode = state.context?.pendingJoinCode;
@@ -135,6 +129,10 @@ async function handleButton(player, state, replyId) {
 
     case BUTTONS.PLAN_FREE_TRIAL:
       return createRoom(player, state);
+
+    case FEEDBACK_BUTTONS.RATE_5: return handleRating(player, state, 5);
+    case FEEDBACK_BUTTONS.RATE_3: return handleRating(player, state, 3);
+    case FEEDBACK_BUTTONS.RATE_1: return handleRating(player, state, 1);
 
     default:
       return sendText(player.wa_id, copy.unknown());
@@ -192,7 +190,7 @@ async function createRoom(player, state) {
 
   await setState(player.id, STATES.IN_LOBBY, { gameId: game.id, code: game.code });
   await recordEvent({
-    type: 'game_created', source: 'whatsapp', playerId: player.id, gameId: game.id,
+    type: 'game.created', source: 'whatsapp', playerId: player.id, gameId: game.id,
     properties: { code: game.code, expectedPlayers: playerCount },
   });
 
@@ -232,7 +230,7 @@ async function handleJoinRequest(player, rawCode) {
 
     if (!alreadyJoined) {
       await recordEvent({
-        type: 'player_joined', source: 'whatsapp', playerId: player.id, gameId: joined.id,
+        type: 'game.joined', source: 'whatsapp', playerId: player.id, gameId: joined.id,
         properties: { code: joined.code },
       });
     }
@@ -252,6 +250,37 @@ async function handleJoinRequest(player, rawCode) {
   }
 }
 
+// --- Feedback --------------------------------------------------------------
+
+/**
+ * A tapped star rating. Saved immediately - a rating with no comment is still
+ * a rating, and asking for the comment first would lose most of them.
+ */
+async function handleRating(player, state, rating) {
+  const gameId = state.context?.gameId ?? null;
+  await saveRating({ playerId: player.id, gameId, rating });
+
+  await setState(player.id, STATES.AWAITING_FEEDBACK_COMMENT, state.context ?? {});
+  return sendText(player.wa_id, copy.ratingThanks(rating));
+}
+
+/** Whatever they type next becomes the comment. */
+async function handleFeedbackComment(player, state, text) {
+  const trimmed = text.trim();
+  if (/^(no|nope|skip|nothing|na).?$/i.test(trimmed)) {
+    await setState(player.id, STATES.MENU, {});
+    return sendText(player.wa_id, copy.feedbackDone(false));
+  }
+
+  await saveComment({
+    playerId: player.id,
+    gameId: state.context?.gameId ?? null,
+    comment: trimmed.slice(0, 1000),
+  });
+  await setState(player.id, STATES.MENU, {});
+  return sendText(player.wa_id, copy.feedbackDone(true));
+}
+
 // --- Free text -------------------------------------------------------------
 
 async function handleText(player, state, text) {
@@ -261,6 +290,14 @@ async function handleText(player, state, text) {
 
     case STATES.AWAITING_JOIN_CODE:
       return handleJoinRequest(player, text);
+
+    case STATES.AWAITING_FEEDBACK_COMMENT:
+      return handleFeedbackComment(player, state, text);
+
+    case STATES.AWAITING_FEEDBACK:
+      // They typed instead of tapping a rating - take it as the comment
+      // rather than nagging them for a star they did not want to give.
+      return handleFeedbackComment(player, state, text);
 
     case STATES.AWAITING_CONSENT:
       // They typed instead of tapping - re-send the button.

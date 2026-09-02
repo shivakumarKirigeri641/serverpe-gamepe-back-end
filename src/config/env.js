@@ -115,6 +115,9 @@ export const config = {
 
   game: {
     drawIntervalSeconds: int('DRAW_INTERVAL_SECONDS', 12, { min: 3, max: 120 }),
+    // A pre-roll after the host taps Start, so nobody is still opening their
+    // board when the first number lands.
+    startCountdownSeconds: int('START_COUNTDOWN_SECONDS', 5, { min: 3, max: 30 }),
     earlyAdvanceDelayMs: int('EARLY_ADVANCE_DELAY_MS', 300, { min: 0, max: 10000 }),
     minPlayers: int('MIN_PLAYERS_TO_START', 2, { min: 2, max: 50 }),
     maxPlayers: int('MAX_PLAYERS_PER_GAME', 50, { min: 2, max: 500 }),

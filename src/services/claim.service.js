@@ -11,6 +11,16 @@ import { log } from '../utils/logger.js';
 import { validateClaim, eligibleClaims, getClaim, FINAL_CLAIM, CLAIMS } from '../games/tambola/claims.js';
 import { displayNameFor } from './player.service.js';
 import { broadcast } from './live.service.js';
+import { announceGameOver } from './gameover.service.js';
+
+/**
+ * How long a claim is still accepted after the last number is called.
+ *
+ * Long enough for a player to read the number, find it, and tap; short enough
+ * that a finished game does not stay open. Only applies when the game ended by
+ * running out of numbers.
+ */
+const CLAIM_GRACE_MS = 20_000;
 
 export async function attemptClaim({ gameId, playerId, claimType }) {
   // Reject an unknown prize before touching the database. The claims table has
@@ -30,7 +40,22 @@ export async function attemptClaim({ gameId, playerId, claimType }) {
     );
     const game = gameRows[0];
     if (!game) return { ok: false, reason: 'that game does not exist' };
-    if (game.status !== 'running') return { ok: false, reason: 'the game is not running' };
+
+    // A game that ran out of numbers is already 'finished' the instant the
+    // 90th is drawn - so a player whose Full House completes on that number
+    // would never get to claim it. They keep a short window.
+    //
+    // Full House ending the game is different: that prize is gone, and there
+    // is nothing left to claim.
+    const inGrace =
+      game.status === 'finished' &&
+      game.ended_reason === 'numbers_exhausted' &&
+      game.ended_at &&
+      Date.now() - new Date(game.ended_at).getTime() < CLAIM_GRACE_MS;
+
+    if (game.status !== 'running' && !inGrace) {
+      return { ok: false, reason: 'the game is not running' };
+    }
 
     const { rows: entryRows } = await client.query(
       'SELECT ticket FROM entries WHERE game_id = $1 AND player_id = $2',
@@ -104,6 +129,10 @@ export async function attemptClaim({ gameId, playerId, claimType }) {
 
     if (outcome.gameOver) {
       broadcast(gameId, 'game_over', { reason: 'full_house', winner, results: await getResults(gameId) });
+      // Summaries go out after the broadcast, so the celebration is on screen
+      // before the phone buzzes.
+      announceGameOver(gameId).catch((err) =>
+        log.error('could not announce game over', { gameId, message: err.message }));
     }
   }
 

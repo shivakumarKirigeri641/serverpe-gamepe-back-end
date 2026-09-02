@@ -98,7 +98,7 @@ export async function trackBoardRequest(req, { gameId, playerId, type, propertie
   const sessionId = await touchSession(req, { gameId, playerId, isStreamOpen });
   await recordEvent({ type, source: 'board', playerId, gameId, sessionId, properties, req });
 
-  if (type === 'board_open') {
+  if (type === 'board.opened') {
     log.info('board opened', {
       gameId, playerId, client: describeClient(requestInfo(req)),
     });

@@ -1,0 +1,218 @@
+/**
+ * What happens after the last number.
+ *
+ * When a game ends every player gets a WhatsApp message with how they did, a
+ * link to their full report, and a prompt to rate the game. This is the only
+ * moment the platform messages a player who did not just message us, and it is
+ * squarely inside the 24-hour window because they were playing seconds ago.
+ *
+ * Everything here is best-effort and runs after the game is already recorded
+ * as finished. A failure to send a summary must never leave a game in limbo.
+ */
+import { query } from '../db/pool.js';
+import { log } from '../utils/logger.js';
+import { config } from '../config/env.js';
+import { signBoardToken } from '../utils/code.js';
+import { sendText, sendButtons } from '../whatsapp/client.js';
+import { displayNameFor, setState } from './player.service.js';
+import { getResults } from './claim.service.js';
+import { recordEvent } from './tracking.service.js';
+import { STATES } from './conversation-states.js';
+import { CLAIMS } from '../games/tambola/claims.js';
+import { copy } from './copy.js';
+
+export const FEEDBACK_BUTTONS = {
+  RATE_5: 'rate_5',
+  RATE_3: 'rate_3',
+  RATE_1: 'rate_1',
+};
+
+/** The report URL is signed per player, exactly like the board. */
+export function reportUrl(gameId, playerId) {
+  return `${config.publicRoot}/report/${signBoardToken(gameId, playerId)}`;
+}
+
+/**
+ * Fans the end-of-game summary out to everyone who was seated.
+ *
+ * Called once, from wherever the game was marked finished. Guarded by an
+ * event marker so a replayed call cannot message everybody twice.
+ */
+export async function announceGameOver(gameId) {
+  const already = await query(
+    `SELECT 1 FROM analytics_events
+      WHERE game_id = $1 AND event_type = 'game.summary_sent' LIMIT 1`,
+    [gameId],
+  );
+  if (already.rows.length) {
+    log.debug('summary already sent', { gameId });
+    return { sent: 0, skipped: true };
+  }
+
+  const { rows: games } = await query('SELECT * FROM games WHERE id = $1', [gameId]);
+  const game = games[0];
+  if (!game || game.status !== 'finished') return { sent: 0 };
+
+  const results = await getResults(gameId);
+
+  const { rows: players } = await query(
+    `SELECT p.id, p.wa_id, p.display_name, gp.is_host
+       FROM game_players gp JOIN players p ON p.id = gp.player_id
+      WHERE gp.game_id = $1 AND gp.left_at IS NULL`,
+    [gameId],
+  );
+
+  // Marked before sending. If the process dies halfway, the survivors have
+  // already had their message and nobody gets it twice on restart.
+  await recordEvent({
+    type: 'game.summary_sent', source: 'system', gameId,
+    properties: { players: players.length },
+  });
+
+  let sent = 0;
+  for (const player of players) {
+    try {
+      const name = displayNameFor(player);
+      const mine = results.players.find((r) => r.name === name);
+      const won = results.prizes.filter((p) => p.winner === name);
+
+      await sendText(player.wa_id, summaryText({ game, results, mine, won, name }));
+      await sendText(player.wa_id, copy.gameReport(game.code, reportUrl(game.id, player.id)));
+
+      await sendButtons(
+        player.wa_id,
+        `How was that game? Your rating helps us make it better.`,
+        [
+          { id: FEEDBACK_BUTTONS.RATE_5, title: '⭐ Loved it' },
+          { id: FEEDBACK_BUTTONS.RATE_3, title: '🙂 It was ok' },
+          { id: FEEDBACK_BUTTONS.RATE_1, title: '😕 Not great' },
+        ],
+        { footer: 'Tap one - you can add a comment after' },
+      );
+
+      // Park them in the feedback state so a free-text reply becomes a comment
+      // rather than falling through to "I didn't understand that".
+      await setState(player.id, STATES.AWAITING_FEEDBACK, { gameId, code: game.code });
+      sent++;
+    } catch (err) {
+      log.warn('could not send game summary', { playerId: player.id, message: err.message });
+    }
+  }
+
+  log.info('game summaries sent', { gameId, sent, of: players.length });
+  return { sent };
+}
+
+function summaryText({ game, results, mine, won, name }) {
+  const lines = [];
+  lines.push(`*Game ${game.code} - that's a wrap!* 🎉`, '');
+
+  const champion = results.prizes.find((p) => p.key === 'full_house');
+  if (champion?.winner) {
+    lines.push(
+      champion.winner === name
+        ? `🏆 *You won the Full House!* Every number on your ticket was called.`
+        : `🏆 *${champion.winner}* took the Full House.`,
+      '',
+    );
+  }
+
+  lines.push('*Prizes*');
+  for (const prize of results.prizes) {
+    const label = CLAIMS.find((c) => c.key === prize.key)?.label ?? prize.key;
+    if (!prize.winner) lines.push(`• ${label} — _unclaimed_`);
+    else if (prize.winner === name) lines.push(`• ${label} — *you* 🎉`);
+    else lines.push(`• ${label} — ${prize.winner}`);
+  }
+
+  if (mine) {
+    const pct = mine.total ? Math.round((mine.correct / mine.total) * 100) : 0;
+    lines.push(
+      '',
+      '*How you played*',
+      `• Numbers marked correctly: ${mine.correct} of ${mine.total} (${pct}%)`,
+      `• Numbers you missed: ${mine.missed}`,
+      `• Prizes won: ${won.length}`,
+    );
+  }
+
+  lines.push('', 'Your full report, ticket and every number is in the link below.');
+  return lines.join('\n');
+}
+
+/** Everything the per-player report page shows. */
+export async function playerReport(gameId, playerId) {
+  const { rows: games } = await query('SELECT * FROM games WHERE id = $1', [gameId]);
+  const game = games[0];
+  if (!game) return null;
+
+  const { rows: people } = await query(
+    `SELECT p.id, p.wa_id, p.display_name, gp.is_host, gp.joined_at
+       FROM game_players gp JOIN players p ON p.id = gp.player_id
+      WHERE gp.game_id = $1 AND gp.player_id = $2`,
+    [gameId, playerId],
+  );
+  if (!people[0]) return null;
+
+  const { rows: entry } = await query(
+    'SELECT ticket FROM entries WHERE game_id = $1 AND player_id = $2',
+    [gameId, playerId],
+  );
+
+  // Every number, with what this player did about it. This is the row-by-row
+  // audit an operator or a suspicious player can check a disputed game against.
+  const { rows: timeline } = await query(
+    `SELECT d.seq, d.value, d.drawn_at,
+            a.answer, a.was_correct, a.answered_at,
+            EXTRACT(EPOCH FROM (a.answered_at - d.drawn_at)) AS took_seconds
+       FROM draws d
+       LEFT JOIN draw_answers a
+              ON a.game_id = d.game_id AND a.seq = d.seq AND a.player_id = $2
+      WHERE d.game_id = $1
+      ORDER BY d.seq`,
+    [gameId, playerId],
+  );
+
+  const { rows: claims } = await query(
+    `SELECT claim_type, status, seq, reason, created_at
+       FROM claims WHERE game_id = $1 AND player_id = $2 ORDER BY created_at`,
+    [gameId, playerId],
+  );
+
+  const host = await query(
+    `SELECT p.wa_id, p.display_name FROM players p WHERE p.id = $1`,
+    [game.host_player_id],
+  );
+
+  const results = await getResults(gameId);
+  const me = displayNameFor(people[0]);
+
+  return {
+    game: {
+      code: game.code,
+      status: game.status,
+      startedAt: game.started_at,
+      endedAt: game.ended_at,
+      endedReason: game.ended_reason,
+      numbersCalled: game.cursor,
+      expectedPlayers: game.expected_players,
+      drawInterval: game.draw_interval_seconds,
+    },
+    host: host.rows[0] ? displayNameFor(host.rows[0]) : null,
+    you: { name: me, isHost: people[0].is_host, joinedAt: people[0].joined_at },
+    ticket: entry[0]?.ticket ?? null,
+    timeline: timeline.map((t) => ({
+      seq: t.seq,
+      value: t.value,
+      drawnAt: t.drawn_at,
+      answer: t.answer ?? 'no_response',
+      wasCorrect: t.was_correct,
+      tookSeconds: t.took_seconds === null ? null : Math.max(0, Number(t.took_seconds)),
+    })),
+    claims,
+    prizes: results.prizes,
+    accuracy: results.players.find((p) => p.name === me) ?? null,
+    leaderboard: results.players,
+    brand: config.brandName,
+  };
+}

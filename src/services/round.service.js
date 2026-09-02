@@ -13,6 +13,7 @@ import { config } from '../config/env.js';
 import { taglineFor } from '../games/tambola/taglines.js';
 import { isGameOver } from '../games/tambola/claims.js';
 import { broadcast } from './live.service.js';
+import { announceGameOver } from './gameover.service.js';
 
 /**
  * Advances one game by exactly one number.
@@ -90,6 +91,7 @@ export async function performDraw(gameId, expectedCursor = null) {
 
   if (result.ended) {
     broadcast(gameId, 'game_over', { reason: result.reason });
+    announceGameOver(gameId).catch(() => {});
     return null;
   }
 
@@ -105,7 +107,10 @@ export async function performDraw(gameId, expectedCursor = null) {
     result.seq,
   );
 
-  if (result.finished) broadcast(gameId, 'game_over', { reason: result.reason });
+  if (result.finished) {
+    broadcast(gameId, 'game_over', { reason: result.reason });
+    announceGameOver(gameId).catch(() => {});
+  }
 
   log.info('draw', { gameId, seq: result.seq, value: result.value });
   return result;
@@ -170,16 +175,41 @@ export async function recordAnswer({ gameId, playerId, seq, answer }) {
     stored = rows[0];
   }
 
-  await maybeAdvanceEarly(gameId, seq);
+  const progress = await answerProgress(gameId, seq);
+  await maybeAdvanceEarly(gameId, seq, progress);
 
+  // Everyone's board updates its "waiting for N others" line.
+  broadcast(gameId, 'answers', { seq, ...progress });
+
+  // NOTE what is deliberately absent: onTicket and wasCorrect.
+  //
+  // The player marks their own ticket and finds out how they did when the game
+  // ends. Telling them mid-game turns every number into the server confirming
+  // the answer for them, which is not the game. The truth is still recorded in
+  // draw_answers, and claims are still validated against `draws`, so a wrong
+  // tap costs accuracy and nothing else.
   return {
     ok: true,
     value,
-    onTicket,
     answer: stored.answer,
-    wasCorrect: stored.was_correct,
     alreadyAnswered: inserted.length === 0,
+    ...progress,
+    // Never serialised to the player - the caller pulls this out for the audit
+    // trail and sends the rest.
+    audit: { onTicket, wasCorrect: stored.was_correct },
   };
+}
+
+/** How many of the seated players have answered this number. */
+export async function answerProgress(gameId, seq) {
+  const { rows } = await query(
+    `SELECT (SELECT count(*)::int FROM game_players
+              WHERE game_id = $1 AND left_at IS NULL)                 AS total,
+            (SELECT count(*)::int FROM draw_answers
+              WHERE game_id = $1 AND seq = $2)                        AS answered`,
+    [gameId, seq],
+  );
+  return { answered: rows[0].answered, total: rows[0].total };
 }
 
 /**
@@ -188,14 +218,8 @@ export async function recordAnswer({ gameId, playerId, seq, answer }) {
  * the scheduler stays the only thing that draws and the row lock still
  * arbitrates.
  */
-async function maybeAdvanceEarly(gameId, seq) {
-  const { rows } = await query(
-    `SELECT (SELECT count(*) FROM game_players WHERE game_id = $1 AND left_at IS NULL) AS players,
-            (SELECT count(*) FROM draw_answers WHERE game_id = $1 AND seq = $2)        AS answers`,
-    [gameId, seq],
-  );
-  const { players, answers } = rows[0];
-  if (Number(answers) < Number(players)) return;
+async function maybeAdvanceEarly(gameId, seq, progress) {
+  if (progress.answered < progress.total) return;
 
   await query(
     `UPDATE games

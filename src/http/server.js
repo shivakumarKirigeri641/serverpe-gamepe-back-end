@@ -11,6 +11,7 @@ import { webhookRoutes } from './webhook.routes.js';
 import { policiesPage } from './policies-page.js';
 import { boardRoutes } from './board.routes.js';
 import { adminRoutes } from './admin.routes.js';
+import { publicRoutes } from './public.routes.js';
 
 export function createApp() {
   const app = express();
@@ -81,18 +82,7 @@ export function createApp() {
 
   api.use(config.admin.basePath, adminRoutes());
 
-  // The panel reads this without a token - it is the same manifest the board
-  // and the marketing site use, so three surfaces cannot drift apart.
-  api.get('/public/brand', (_req, res) => {
-    res.json({
-      data: {
-        name: config.brandName,
-        whatsapp_number: config.whatsapp.businessNumber,
-        public_base_url: config.publicRoot,
-        policies_url: `${config.publicRoot}/policies`,
-      },
-    });
-  });
+  api.use(publicRoutes());
 
   api.use(boardRoutes());
   api.use(webhookRoutes());

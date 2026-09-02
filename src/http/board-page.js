@@ -79,6 +79,62 @@ header{display:flex;align-items:center;gap:10px;padding:6px 2px 12px}
 .nudge{text-align:center;font-size:13px;color:var(--dim);min-height:1.3em;margin:-4px 0 8px}
 .nudge.good{color:var(--ok)} .nudge.bad{color:var(--gold)}
 
+/* ---- waiting for the rest of the table ---- */
+.waiting{
+  display:flex;align-items:center;gap:10px;justify-content:center;
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:12px;margin:10px 0;font-size:14px;color:var(--dim);
+}
+.waiting .spin{
+  width:15px;height:15px;border-radius:50%;flex:none;
+  border:2px solid var(--line);border-top-color:var(--gold);
+  animation:spin .9s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.waiting b{color:var(--text)}
+.waiting .left{margin-left:auto;font:700 15px ui-monospace,Menlo,monospace;color:var(--gold)}
+
+/* ---- the 5-second countdown before the first number ---- */
+#countdown{
+  position:fixed;inset:0;z-index:60;display:grid;place-items:center;
+  background:radial-gradient(circle at 50% 45%,rgba(92,15,43,.97),rgba(12,11,15,.99) 70%);
+  backdrop-filter:blur(3px);
+}
+#countdown .ring{
+  width:200px;height:200px;border-radius:50%;display:grid;place-items:center;
+  border:3px solid rgba(212,165,55,.35);
+  box-shadow:0 0 60px rgba(212,165,55,.28), inset 0 0 40px rgba(212,165,55,.12);
+}
+#countdown .n{
+  font:800 96px/1 ui-rounded,system-ui,sans-serif;color:var(--gold);
+  text-shadow:0 0 40px rgba(212,165,55,.5);
+}
+/* Re-triggered on each tick, so every digit lands with the same beat. */
+#countdown .n.tick{animation:tick .9s cubic-bezier(.2,1.4,.35,1)}
+@keyframes tick{0%{transform:scale(.35);opacity:0}45%{transform:scale(1.14);opacity:1}100%{transform:scale(1);opacity:1}}
+#countdown .cap{margin-top:22px;text-align:center;color:#f7dfa5;font-size:15px;letter-spacing:.04em}
+#countdown .go{font:800 52px/1 ui-rounded,system-ui;color:var(--gold)}
+
+/* ---- game over celebration ---- */
+.celebrate{
+  position:relative;overflow:hidden;text-align:center;
+  background:linear-gradient(160deg,var(--maroon),var(--maroon-deep));
+  border:1px solid rgba(212,165,55,.4);border-radius:16px;padding:26px 16px;margin:10px 0;
+}
+.celebrate .cup{font-size:52px;line-height:1;animation:bounce 1.1s ease-in-out infinite}
+@keyframes bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-9px)}}
+.celebrate h2{margin:10px 0 4px;font-size:15px;letter-spacing:.16em;text-transform:uppercase;color:#f7dfa5}
+.celebrate .who{font:800 30px/1.15 ui-rounded,system-ui;color:#fff;margin:6px 0}
+.celebrate .what{color:var(--gold);font-weight:700;font-size:17px}
+.celebrate .sub{color:#f7dfa5;opacity:.85;font-size:13px;margin-top:10px}
+/* Confetti is drawn, not imported - no asset request on a weak connection. */
+.confetti{position:absolute;top:-12px;width:9px;height:14px;opacity:.9;
+  animation:fall linear forwards}
+@keyframes fall{
+  0%{transform:translateY(-20px) rotate(0);opacity:1}
+  100%{transform:translateY(420px) rotate(720deg);opacity:0}
+}
+
 /* ---- the ticket: printed paper ---- */
 .ticket{
   background:var(--paper);color:var(--ink);border-radius:4px;margin:12px 0;
@@ -105,12 +161,14 @@ td.blank{background:repeating-linear-gradient(45deg,transparent,transparent 5px,
 td.marked::after{
   content:"";position:absolute;inset:50% auto auto 50%;
   width:40px;height:40px;margin:-20px 0 0 -20px;border-radius:50%;
-  background:radial-gradient(circle at 38% 34%,rgba(200,40,70,.62),rgba(139,30,63,.48) 70%);
-  box-shadow:0 0 0 1px rgba(139,30,63,.18) inset;
+  /* Emerald on cream: complementary to the maroon rules, far brighter than a
+     red blot on warm paper, and the number stays legible underneath. */
+  background:radial-gradient(circle at 36% 32%,rgba(16,185,129,.78),rgba(4,120,87,.62) 70%);
+  box-shadow:0 0 0 1px rgba(4,120,87,.25) inset, 0 1px 4px rgba(4,120,87,.35);
   animation:stamp .3s cubic-bezier(.2,1.6,.4,1);
 }
 @keyframes stamp{0%{transform:scale(.2);opacity:0}70%{transform:scale(1.15)}100%{transform:scale(1);opacity:1}}
-td.marked{color:#4a1020}
+td.marked{color:#06301f;font-weight:700}
 td.hit{box-shadow:inset 0 0 0 3px var(--gold)}
 
 /* ---- called numbers panel ---- */
@@ -230,17 +288,35 @@ details.called[open] summary::after{transform:rotate(180deg)}
 
     es.addEventListener('state', function(e){ apply(JSON.parse(e.data)); });
     es.addEventListener('state_stale', function(){ refresh(); });
-    es.addEventListener('started', function(){ refresh(); });
+
+    // The host has started. Everyone counts down together; the first number is
+    // scheduled to land exactly as this reaches zero.
+    es.addEventListener('started', function(e){
+      var d = JSON.parse(e.data || '{}');
+      runCountdown(d.countdownSeconds || 5);
+    });
 
     es.addEventListener('draw', function(e){
       var d = JSON.parse(e.data);
       if (!state) return refresh();
+      hideCountdown();
+      state.game.status = 'running';
       state.draws.push({seq:d.seq, value:d.value, tagline:d.tagline});
       state.current = d;
       state.secondsLeft = d.intervalSeconds;
+      state.yourAnswer = null;
+      state.progress = {answered:0, total: state.progress ? state.progress.total : state.joined};
       answeredSeq = 0;
       render(true);
       refreshClaims();
+    });
+
+    // Somebody else answered - update the "waiting for N" line without a fetch.
+    es.addEventListener('answers', function(e){
+      var d = JSON.parse(e.data);
+      if (!state || !state.current || d.seq !== state.current.seq) return;
+      state.progress = {answered:d.answered, total:d.total};
+      paintWaiting();
     });
 
     es.addEventListener('claim', function(e){
@@ -249,7 +325,43 @@ details.called[open] summary::after{transform:rotate(180deg)}
       refreshClaims();
     });
 
-    es.addEventListener('game_over', function(){ refresh(); });
+    es.addEventListener('game_over', function(e){
+      var d = JSON.parse(e.data || '{}');
+      hideCountdown();
+      lastWinner = d;
+      refresh();
+    });
+  }
+
+  // ---- countdown ----
+  var lastWinner = null, countdownTimer = null;
+
+  function runCountdown(seconds){
+    hideCountdown();
+    var el = document.createElement('div');
+    el.id = 'countdown';
+    el.innerHTML = '<div><div class="ring"><div class="n" id="cdN"></div></div>' +
+      '<div class="cap">Get your ticket ready…</div></div>';
+    document.body.appendChild(el);
+
+    var n = seconds;
+    var node = document.getElementById('cdN');
+    var paint = function(){
+      if (n > 0) { node.textContent = n; node.className = 'n'; void node.offsetWidth; node.className = 'n tick'; }
+      else { node.innerHTML = '<span class="go">GO!</span>'; }
+    };
+    paint();
+    countdownTimer = setInterval(function(){
+      n--;
+      if (n < 0) { hideCountdown(); refresh(); return; }
+      paint();
+    }, 1000);
+  }
+
+  function hideCountdown(){
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    var el = document.getElementById('countdown');
+    if (el) el.remove();
   }
 
   function refresh(){
@@ -338,11 +450,16 @@ details.called[open] summary::after{transform:rotate(180deg)}
       '<button class="yes" id="yes">✓ I have it</button>' +
       '<button class="no" id="no">✗ Not on mine</button>' +
     '</div>' +
+    '<div id="waitBox"></div>' +
     '<div class="nudge" id="nudge"></div>' +
     ticketHtml() + calledHtml();
 
     setView(html, 'game');
     wireAnswers();
+    // Also on first paint, not only on later patches - otherwise the panel
+    // renders as an empty bar until the second number arrives.
+    updateCalled();
+    updateTicket();
     startTimer();
     claimbar.classList.remove('hidden');
     renderClaims();
@@ -351,26 +468,79 @@ details.called[open] summary::after{transform:rotate(180deg)}
   function renderOver(){
     claimbar.classList.add('hidden');
     if (tick) clearInterval(tick);
+    hideCountdown();
     var r = state.results || {prizes:[], players:[]};
-    var reason = state.game.endedReason === 'full_house'
-      ? 'Full House! That is game.' : 'All 90 numbers called.';
+    var fullHouse = state.game.endedReason === 'full_house';
+    var reason = fullHouse ? 'Full House! That is game.' : 'All 90 numbers called.';
 
-    var html = '<div class="card"><h2>Game over</h2>' +
+    // Who took the Full House - from the results, so a reload still shows it.
+    var champ = (r.prizes.filter(function(p){ return p.key === 'full_house'; })[0] || {}).winner
+      || (lastWinner && lastWinner.winner) || null;
+    var youWon = champ && state.you && champ === state.you.name;
+
+    var html = '';
+    if (fullHouse && champ) {
+      html += '<div class="celebrate" id="celebrate">' +
+        '<div class="cup">' + (youWon ? '🏆' : '🎉') + '</div>' +
+        '<h2>' + (youWon ? 'You did it' : 'Full House') + '</h2>' +
+        '<div class="who">' + esc(champ) + '</div>' +
+        '<div class="what">wins the Full House!</div>' +
+        '<div class="sub">' + (youWon
+          ? 'Every number on your ticket was called. Beautifully played.'
+          : 'That brings the game to a close. Well played, everyone.') + '</div>' +
+      '</div>';
+    }
+
+    html += '<div class="card"><h2>Game over</h2>' +
       '<div class="muted">' + esc(reason) + '</div>' +
       '<ul class="prizes">' + r.prizes.map(function(p){
         return '<li class="' + (p.winner ? '' : 'none') + '">' + esc(p.label) +
           '<b>' + esc(p.winner || 'unclaimed') + '</b></li>';
       }).join('') + '</ul></div>';
 
+    // Only now is it revealed how accurately each player marked their own
+    // ticket. During the game the server never says.
     if (r.players.length) {
-      html += '<div class="card"><h2>Who was paying attention</h2><ul class="prizes">' +
+      html += '<div class="card"><h2>How accurately you marked</h2>' +
+        '<div class="muted">Your taps against what was actually called.</div>' +
+        '<ul class="prizes">' +
         r.players.map(function(p){
-          return '<li>' + esc(p.name) + '<b>' + p.correct + '/' + p.total + '</b></li>';
+          var pct = p.total ? Math.round((p.correct / p.total) * 100) : 0;
+          var you = state.you && p.name === state.you.name;
+          return '<li>' + (you ? '<b style="color:var(--gold)">You</b>' : esc(p.name)) +
+            '<b>' + p.correct + '/' + p.total + ' &middot; ' + pct + '%</b></li>';
         }).join('') + '</ul></div>';
     }
-    html += '<div class="card"><div class="muted">Thanks for playing! Head back to WhatsApp ' +
-      'to start another game.</div></div>' + ticketHtml();
+
+    html += '<div class="card" style="text-align:center">' +
+      '<h2>Thanks for playing!</h2>' +
+      '<div class="muted">Head back to WhatsApp — we have sent you your game report, ' +
+      'and you can rate the game there.</div>' +
+      '<a class="btn" style="display:block;margin-top:12px;text-decoration:none" ' +
+      'href="https://wa.me/' + esc(state.businessNumber || '') + '">Back to WhatsApp</a>' +
+      '</div>' + ticketHtml();
+
     setView(html, 'over');
+    if (fullHouse && champ) confetti();
+  }
+
+  /** A short burst of drawn confetti. No asset request, no library. */
+  function confetti(){
+    var host = document.getElementById('celebrate');
+    if (!host) return;
+    var colours = ['#d4a537', '#ffffff', '#10b981', '#ff6b8a', '#f7dfa5'];
+    for (var i = 0; i < 34; i++) {
+      var bit = document.createElement('span');
+      bit.className = 'confetti';
+      bit.style.left = Math.random() * 100 + '%';
+      bit.style.background = colours[i % colours.length];
+      bit.style.animationDuration = (1.6 + Math.random() * 1.6) + 's';
+      bit.style.animationDelay = (Math.random() * 0.7) + 's';
+      host.appendChild(bit);
+    }
+    setTimeout(function(){
+      host.querySelectorAll('.confetti').forEach(function(c){ c.remove(); });
+    }, 4200);
   }
 
   /** Replaces the view only when the shape actually changed, so the ticket
@@ -449,11 +619,39 @@ details.called[open] summary::after{transform:rotate(180deg)}
     var cur = state.current;
     var yes = document.getElementById('yes'), no = document.getElementById('no');
     if (!yes || !no) return;
-    var done = cur && answeredSeq === cur.seq;
-    yes.disabled = no.disabled = !cur || done;
+
+    // A reopened page must respect an answer already given, so this trusts the
+    // server's yourAnswer rather than only what this tab remembers.
+    var given = state.yourAnswer || (cur && answeredSeq === cur.seq ? 'given' : null);
+    yes.disabled = no.disabled = !cur || !!given;
+    yes.classList.toggle('on', state.yourAnswer === 'yes');
+    no.classList.toggle('on', state.yourAnswer === 'no');
 
     yes.onclick = function(){ answer('yes'); };
     no.onclick  = function(){ answer('no'); };
+    paintWaiting();
+  }
+
+  /**
+   * "Waiting for the others" - only shown once this player has answered.
+   * Before that the countdown in the banner is the thing to look at.
+   */
+  function paintWaiting(){
+    var box = document.getElementById('waitBox');
+    if (!box) return;
+    var p = state.progress || {answered:0,total:0};
+    var mine = state.yourAnswer || (state.current && answeredSeq === state.current.seq);
+
+    if (!mine || !state.current) { box.innerHTML = ''; return; }
+
+    var others = Math.max(0, p.total - p.answered);
+    box.innerHTML = '<div class="waiting">' +
+      (others > 0 ? '<span class="spin"></span>' : '<span>✓</span>') +
+      '<span>' + (others > 0
+        ? 'Waiting for <b>' + others + '</b> more player' + (others === 1 ? '' : 's') + '…'
+        : 'Everyone has answered - next number coming up') + '</span>' +
+      '<span class="left" id="waitLeft"></span>' +
+    '</div>';
   }
 
   function answer(a){
@@ -465,34 +663,35 @@ details.called[open] summary::after{transform:rotate(180deg)}
 
     post('/answer', {seq:cur.seq, answer:a}).then(function(r){
       var n = document.getElementById('nudge');
-      if (r.status !== 200) { n.textContent = r.body.error || 'Could not record that'; return; }
+      if (r.status !== 200) {
+        n.textContent = r.body.error || 'Could not record that';
+        yes.disabled = no.disabled = false;
+        return;
+      }
       var d = r.body;
 
-      // Always report the answer the SERVER stored. On a double tap the second
-      // one is discarded, and showing feedback for a tap that did not count
-      // would be a lie.
+      // Always reflect the answer the SERVER stored. On a double tap the second
+      // one is discarded, and showing the tap that did not count would be a lie.
       a = d.answer;
-      if (d.alreadyAnswered) {
-        yes.classList.toggle('on', a === 'yes');
-        no.classList.toggle('on', a === 'no');
+      state.yourAnswer = a;
+      state.progress = {answered:d.answered, total:d.total};
+
+      yes.classList.toggle('on', a === 'yes');
+      no.classList.toggle('on', a === 'no');
+
+      // The ticket follows the PLAYER'S OWN answer, and the server does not say
+      // whether it was right. Marking is theirs to get right; how they did is
+      // revealed when the game ends. A wrong tap costs accuracy and nothing
+      // else - claims are validated against the numbers actually called.
+      if (a === 'yes' && state.marked.indexOf(d.value) < 0) state.marked.push(d.value);
+      if (a === 'no') {
+        var at = state.marked.indexOf(d.value);
+        if (at >= 0) state.marked.splice(at, 1);
       }
 
-      // The player marks their own ticket - but a wrong tap is corrected
-      // rather than punished, and never affects a prize claim.
-      if (d.onTicket && a === 'yes') {
-        state.marked.push(d.value);
-        n.textContent = 'Marked!'; n.className = 'nudge good';
-      } else if (d.onTicket && a === 'no') {
-        state.marked.push(d.value);
-        n.textContent = 'Actually ' + d.value + ' IS on your ticket — marked it for you.';
-        n.className = 'nudge bad';
-      } else if (!d.onTicket && a === 'yes') {
-        n.textContent = d.value + ' is not on your ticket.';
-        n.className = 'nudge bad';
-      } else {
-        n.textContent = 'Correct — not on your ticket.'; n.className = 'nudge good';
-      }
-      updateTicket(); refreshClaims();
+      n.textContent = '';
+      n.className = 'nudge';
+      updateTicket(); paintWaiting(); refreshClaims();
     });
   }
 
@@ -515,6 +714,8 @@ details.called[open] summary::after{transform:rotate(180deg)}
       if (!ring) return;
       ring.setAttribute('stroke-dashoffset', String(94.2 * (1 - Math.max(0, left) / total)));
       t.textContent = left > 0 ? left : '';
+      var wl = document.getElementById('waitLeft');
+      if (wl) wl.textContent = left > 0 ? left + 's' : '';
     }
   }
 

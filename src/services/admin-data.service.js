@@ -157,7 +157,23 @@ export async function live() {
      ORDER BY g.status, g.created_at DESC
   `);
 
-  return { counts: numify(counts.rows[0]), games: games.rows.map(numify) };
+  // The live activity feed - what just happened, across every game.
+  const recent = await query(`
+    SELECT e.occurred_at, e.event_type, p.wa_id, ${NAME} AS display_name,
+           g.code AS room_code
+      FROM analytics_events e
+      LEFT JOIN players p ON p.id = e.player_id
+      LEFT JOIN games   g ON g.id = e.game_id
+     WHERE e.occurred_at > now() - interval '30 minutes'
+     ORDER BY e.occurred_at DESC
+     LIMIT 40
+  `);
+
+  return {
+    counts: numify(counts.rows[0]),
+    games: games.rows.map(numify),
+    recent: recent.rows,
+  };
 }
 
 /** Everyone currently seated in a live or waiting game. */
@@ -395,6 +411,223 @@ export async function gameTimeline(id, limit = 400) {
   return rows.map(numify);
 }
 
+// ─── Game audit ────────────────────────────────────────────────────────────
+
+/**
+ * A time window, as SQL.
+ *
+ * The panel asks for "last 24 hours" or "this week" rather than dates, so the
+ * bucket size for the accompanying chart is derived from the range instead of
+ * being a second thing the operator has to choose - an hourly chart over 90
+ * days is unreadable, and a daily chart over one hour is a single bar.
+ */
+export function rangeToInterval(range) {
+  const map = {
+    '1h': { interval: '1 hour', bucket: 'minute', label: 'Last hour' },
+    '6h': { interval: '6 hours', bucket: 'hour', label: 'Last 6 hours' },
+    '24h': { interval: '24 hours', bucket: 'hour', label: 'Last 24 hours' },
+    '7d': { interval: '7 days', bucket: 'day', label: 'Last 7 days' },
+    '30d': { interval: '30 days', bucket: 'day', label: 'Last 30 days' },
+    '90d': { interval: '90 days', bucket: 'week', label: 'Last 90 days' },
+  };
+  return map[range] ?? map['7d'];
+}
+
+/**
+ * Games grouped under the host who ran them, for a time window.
+ *
+ * This is the audit entry point: pick a host's number, see their games, open
+ * one and read every player's ticket and every tap.
+ */
+export async function auditHosts({ range = '7d', search = null } = {}) {
+  const { interval } = rangeToInterval(range);
+  const { rows } = await query(`
+    SELECT p.id AS host_id, p.wa_id AS host_wa_id, ${NAME} AS host_name,
+           p.last_city, p.last_country,
+           count(g.id)::int                                        AS games,
+           count(g.id) FILTER (WHERE g.status='finished')::int      AS finished,
+           count(g.id) FILTER (WHERE g.status='abandoned')::int     AS abandoned,
+           max(g.created_at)                                        AS last_game_at,
+           sum(g.cursor)::int                                       AS numbers_called,
+           (SELECT count(DISTINCT gp.player_id)::int FROM game_players gp
+             WHERE gp.game_id IN (SELECT id FROM games WHERE host_player_id = p.id
+                                    AND created_at > now() - $1::interval)) AS distinct_players
+      FROM games g
+      JOIN players p ON p.id = g.host_player_id
+     WHERE g.created_at > now() - $1::interval
+       AND ($2::text IS NULL OR p.wa_id ILIKE '%'||$2||'%' OR p.display_name ILIKE '%'||$2||'%')
+     GROUP BY p.id, p.wa_id, p.display_name, p.last_city, p.last_country
+     ORDER BY max(g.created_at) DESC
+  `, [interval, search]);
+
+  const hosts = rows.map(numify);
+
+  // Their games, in one round trip rather than one query per host.
+  const ids = hosts.map((h) => h.host_id);
+  if (ids.length === 0) return [];
+
+  const { rows: games } = await query(`
+    SELECT g.id, g.host_player_id, g.code AS room_code, g.status, g.created_at,
+           g.started_at, g.ended_at, g.ended_reason, g.expected_players,
+           g.cursor AS numbers_called,
+           (SELECT count(*)::int FROM game_players gp
+             WHERE gp.game_id = g.id AND gp.left_at IS NULL)          AS players,
+           (SELECT count(*)::int FROM claims c
+             WHERE c.game_id = g.id AND c.status='awarded')           AS prizes_awarded,
+           EXTRACT(EPOCH FROM (COALESCE(g.ended_at, now()) - g.created_at))/60 AS minutes
+      FROM games g
+     WHERE g.host_player_id = ANY($1) AND g.created_at > now() - $2::interval
+     ORDER BY g.created_at DESC
+  `, [ids, interval]);
+
+  const byHost = new Map(hosts.map((h) => [h.host_id, { ...h, games: [] }]));
+  for (const g of games) {
+    byHost.get(g.host_player_id)?.games.push({
+      ...numify(g), minutes: Math.round(Number(g.minutes)),
+    });
+  }
+  return [...byHost.values()];
+}
+
+/**
+ * The full audit of one game: every player, their ticket, and what they did
+ * with every single number.
+ *
+ * This is the thing to open when someone disputes a result. It answers "was
+ * that number really called, did they really tap that, and was the prize
+ * validly awarded" without anyone having to read the database by hand.
+ */
+export async function auditGame(gameId) {
+  const { rows: games } = await query(`
+    SELECT g.*, ${NAME} AS host_name, p.wa_id AS host_wa_id
+      FROM games g JOIN players p ON p.id = g.host_player_id
+     WHERE g.id = $1
+  `, [gameId]);
+  if (!games[0]) return null;
+
+  const game = games[0];
+  const sequence = game.sequence;
+  delete game.sequence;   // 90 numbers of internal detail the page never shows
+
+  const [draws, people, claims] = await Promise.all([
+    query('SELECT seq, value, drawn_at FROM draws WHERE game_id=$1 ORDER BY seq', [gameId]),
+    query(`
+      SELECT p.id, p.wa_id, ${NAME} AS display_name, gp.is_host, gp.joined_at, gp.left_at,
+             p.last_ip, p.last_device_type, p.last_os, p.last_browser,
+             p.last_city, p.last_region, p.last_country,
+             e.ticket
+        FROM game_players gp
+        JOIN players p ON p.id = gp.player_id
+        LEFT JOIN entries e ON e.game_id = gp.game_id AND e.player_id = gp.player_id
+       WHERE gp.game_id = $1 ORDER BY gp.is_host DESC, gp.joined_at`, [gameId]),
+    query(`
+      SELECT c.player_id, c.claim_type, c.status, c.seq, c.reason, c.created_at
+        FROM claims c WHERE c.game_id = $1 ORDER BY c.created_at`, [gameId]),
+  ]);
+
+  const { rows: answers } = await query(`
+    SELECT a.player_id, a.seq, a.answer, a.was_correct, a.answered_at,
+           EXTRACT(EPOCH FROM (a.answered_at - d.drawn_at)) AS took_seconds
+      FROM draw_answers a
+      JOIN draws d ON d.game_id = a.game_id AND d.seq = a.seq
+     WHERE a.game_id = $1`, [gameId]);
+
+  const answersByPlayer = new Map();
+  for (const a of answers) {
+    if (!answersByPlayer.has(a.player_id)) answersByPlayer.set(a.player_id, new Map());
+    answersByPlayer.get(a.player_id).set(a.seq, a);
+  }
+
+  const players = people.rows.map((p) => {
+    const mine = answersByPlayer.get(p.id) ?? new Map();
+    const trail = draws.rows.map((d) => {
+      const a = mine.get(d.seq);
+      const onTicket = p.ticket ? p.ticket.numbers.includes(d.value) : null;
+      return {
+        seq: d.seq,
+        value: d.value,
+        drawnAt: d.drawn_at,
+        onTicket,
+        answer: a?.answer ?? 'no_response',
+        wasCorrect: a?.was_correct ?? null,
+        answeredAt: a?.answered_at ?? null,
+        tookSeconds: a?.took_seconds == null ? null : Math.max(0, Number(a.took_seconds)),
+      };
+    });
+
+    const answered = trail.filter((t) => t.answer !== 'no_response').length;
+    const correct = trail.filter((t) => t.wasCorrect === true).length;
+    const times = trail.filter((t) => t.tookSeconds != null).map((t) => t.tookSeconds);
+
+    return {
+      id: p.id,
+      wa_id: p.wa_id,
+      display_name: p.display_name,
+      is_host: p.is_host,
+      joined_at: p.joined_at,
+      left_at: p.left_at,
+      device: {
+        ip: p.last_ip, type: p.last_device_type, os: p.last_os, browser: p.last_browser,
+        place: [p.last_city, p.last_region, p.last_country].filter(Boolean).join(', ') || null,
+      },
+      ticket: p.ticket,
+      trail,
+      stats: {
+        answered,
+        correct,
+        wrong: trail.filter((t) => t.wasCorrect === false).length,
+        missed: trail.length - answered,
+        accuracyPct: answered ? Math.round((correct / answered) * 100) : 0,
+        avgSeconds: times.length
+          ? Number((times.reduce((a, b) => a + b, 0) / times.length).toFixed(1))
+          : null,
+      },
+      claims: claims.rows.filter((c) => c.player_id === p.id),
+    };
+  });
+
+  return {
+    game: numify(game),
+    totalNumbers: Array.isArray(sequence) ? sequence.length : 90,
+    draws: draws.rows.map(numify),
+    players,
+    prizes: CLAIMS.map((c) => {
+      const won = claims.rows.find((x) => x.claim_type === c.key && x.status === 'awarded');
+      const winner = won ? players.find((p) => p.id === won.player_id) : null;
+      return { key: c.key, label: c.label, winner: winner?.display_name ?? null, seq: won?.seq ?? null };
+    }),
+  };
+}
+
+/** Activity bucketed for the audit screen's chart. */
+export async function auditActivity({ range = '7d' } = {}) {
+  const { interval, bucket } = rangeToInterval(range);
+  // Each game is stamped with its bucket first, then aggregated. Correlating a
+  // subquery against the outer GROUP BY (to count distinct players per bucket)
+  // is not valid SQL - joining the seats in and counting them here is.
+  const { rows } = await query(`
+    WITH stamped AS (
+      SELECT g.id, g.status, g.cursor,
+             date_trunc($2, g.created_at AT TIME ZONE 'Asia/Kolkata') AS at
+        FROM games g
+       WHERE g.created_at > now() - $1::interval
+    )
+    SELECT to_char(s.at, CASE $2 WHEN 'minute' THEN 'HH24:MI'
+                                 WHEN 'hour'   THEN 'DD Mon HH24:00'
+                                 ELSE 'DD Mon' END)          AS bucket,
+           s.at                                              AS sort_at,
+           count(DISTINCT s.id)::int                          AS games,
+           count(DISTINCT s.id) FILTER (WHERE s.status='finished')::int AS finished,
+           COALESCE(sum(DISTINCT s.cursor), 0)::int           AS numbers,
+           count(DISTINCT gp.player_id)::int                  AS players
+      FROM stamped s
+      LEFT JOIN game_players gp ON gp.game_id = s.id
+     GROUP BY s.at
+     ORDER BY s.at
+  `, [interval, bucket]);
+  return rows.map(numify);
+}
+
 // ─── Hosts ─────────────────────────────────────────────────────────────────
 
 export async function listHosts({ limit = 100, offset = 0, search = null } = {}) {
@@ -502,55 +735,75 @@ export async function conversation(playerId, limit = 200) {
 
 // ─── Analytics ─────────────────────────────────────────────────────────────
 
-/** Where people drop out, from first message to a finished game. */
+/**
+ * Where people drop out, from first message to a won prize.
+ *
+ * Returns an OBJECT keyed by step, because the panel looks each step up by
+ * name (funnel[key]) rather than iterating a list - that way adding a step
+ * here cannot silently reorder the chart there.
+ *
+ * Every step counts DISTINCT players, so the drop between two steps is real
+ * attrition rather than a change in how busy people were.
+ */
 export async function funnel({ days = 30 } = {}) {
   const { rows } = await query(`
     SELECT
       (SELECT count(DISTINCT player_id) FROM messages
-        WHERE direction='in' AND created_at > now() - make_interval(days => $1))  AS said_hi,
+        WHERE direction='in' AND created_at > now() - make_interval(days => $1))   AS messaged_bot,
       (SELECT count(DISTINCT player_id) FROM consents
-        WHERE agreed_at > now() - make_interval(days => $1))                      AS consented,
+        WHERE agreed_at > now() - make_interval(days => $1))                       AS saw_menu,
+      (SELECT count(DISTINCT host_player_id) FROM games
+        WHERE created_at > now() - make_interval(days => $1))                      AS created_room,
       (SELECT count(DISTINCT gp.player_id) FROM game_players gp JOIN games g ON g.id=gp.game_id
-        WHERE g.created_at > now() - make_interval(days => $1))                   AS joined_game,
+        WHERE g.created_at > now() - make_interval(days => $1))                    AS joined_room,
       (SELECT count(DISTINCT gp.player_id) FROM game_players gp JOIN games g ON g.id=gp.game_id
         WHERE g.status IN ('running','finished')
-          AND g.created_at > now() - make_interval(days => $1))                   AS played,
+          AND g.created_at > now() - make_interval(days => $1))                    AS started_game,
+      (SELECT count(DISTINCT a.player_id) FROM draw_answers a
+        WHERE a.answer <> 'no_response'
+          AND a.answered_at > now() - make_interval(days => $1))                   AS answered_a_number,
       (SELECT count(DISTINCT player_id) FROM claims
-        WHERE status='awarded' AND created_at > now() - make_interval(days => $1)) AS won_a_prize
+        WHERE status='awarded' AND created_at > now() - make_interval(days => $1))  AS won_a_prize
   `, [days]);
 
-  const r = numify(rows[0]);
-  return [
-    { label: 'Messaged us', value: r.said_hi },
-    { label: 'Accepted terms', value: r.consented },
-    { label: 'Joined a game', value: r.joined_game },
-    { label: 'Played', value: r.played },
-    { label: 'Won a prize', value: r.won_a_prize },
-  ];
+  return numify(rows[0]);
 }
 
-/** How quickly players answer a called number. */
+/**
+ * How quickly players answer a called number, as a histogram.
+ *
+ * Returns buckets rather than an average because the average hides the thing
+ * you actually want to see: whether there is a tail of people who are barely
+ * keeping up. Ordered fastest-first, which is what the chart's colour ramp
+ * assumes.
+ */
 export async function responseTimes({ days = 30 } = {}) {
   const { rows } = await query(`
-    SELECT
-      percentile_cont(0.5)  WITHIN GROUP (ORDER BY ms) AS median_response_ms,
-      percentile_cont(0.9)  WITHIN GROUP (ORDER BY ms) AS p90_response_ms,
-      count(*)::int                                    AS samples
-    FROM (
-      SELECT EXTRACT(EPOCH FROM (a.answered_at - d.drawn_at)) * 1000 AS ms
+    WITH answered AS (
+      SELECT EXTRACT(EPOCH FROM (a.answered_at - d.drawn_at)) AS secs
         FROM draw_answers a
         JOIN draws d ON d.game_id = a.game_id AND d.seq = a.seq
        WHERE a.answer <> 'no_response'
          AND a.answered_at > now() - make_interval(days => $1)
          AND a.answered_at >= d.drawn_at
-    ) t
+    ), bucketed AS (
+      SELECT CASE
+               WHEN secs < 2  THEN '0-2s'
+               WHEN secs < 4  THEN '2-4s'
+               WHEN secs < 6  THEN '4-6s'
+               WHEN secs < 8  THEN '6-8s'
+               WHEN secs < 10 THEN '8-10s'
+               ELSE '10s+'
+             END AS bucket
+        FROM answered
+    )
+    SELECT b.bucket, count(x.bucket)::int AS responses
+      FROM (VALUES ('0-2s',1),('2-4s',2),('4-6s',3),('6-8s',4),('8-10s',5),('10s+',6)) AS b(bucket, ord)
+      LEFT JOIN bucketed x ON x.bucket = b.bucket
+     GROUP BY b.bucket, b.ord
+     ORDER BY b.ord
   `, [days]);
-  const r = rows[0];
-  return {
-    median_response_ms: r.median_response_ms === null ? null : Math.round(Number(r.median_response_ms)),
-    p90_response_ms: r.p90_response_ms === null ? null : Math.round(Number(r.p90_response_ms)),
-    samples: Number(r.samples),
-  };
+  return rows.map(numify);
 }
 
 export async function messageDelivery({ days = 30 } = {}) {
@@ -572,6 +825,93 @@ export async function consentStats() {
              WHERE policy_version = (SELECT max(policy_version) FROM consents)) AS accepted_current
   `);
   return rows.map(numify);
+}
+
+// ─── Free trial ────────────────────────────────────────────────────────────
+
+/**
+ * The trial screen's own funnel and daily shape.
+ *
+ * Separate from funnel() because this one is measured over the whole trial,
+ * not a rolling window - the question is "has the trial worked", not "how are
+ * we doing this month".
+ */
+export async function trialReport({ days = 30 } = {}) {
+  const { rows: counts } = await query(`
+    SELECT
+      (SELECT count(DISTINCT player_id) FROM messages WHERE direction='in')   AS signups,
+      (SELECT count(DISTINCT player_id) FROM consents)                        AS consented,
+      (SELECT count(DISTINCT gp.player_id) FROM game_players gp)              AS played,
+      (SELECT count(DISTINCT host_player_id) FROM games)                      AS hosts,
+      (SELECT count(*) FROM games)                                            AS "gamesStarted",
+      (SELECT count(*) FROM games WHERE status='finished')                    AS "gamesCompleted",
+      -- "Came back" = played on more than one distinct day. The single most
+      -- honest signal that the game is actually fun.
+      (SELECT count(*) FROM (
+         SELECT gp.player_id
+           FROM game_players gp JOIN games g ON g.id = gp.game_id
+          GROUP BY gp.player_id
+         HAVING count(DISTINCT (g.created_at AT TIME ZONE 'Asia/Kolkata')::date) > 1
+       ) t)                                                                   AS returning
+  `);
+
+  const { rows: daily } = await query(`
+    WITH span AS (
+      SELECT generate_series(
+        (now() AT TIME ZONE 'Asia/Kolkata')::date - ($1::int - 1),
+        (now() AT TIME ZONE 'Asia/Kolkata')::date, '1 day')::date AS day
+    )
+    SELECT to_char(s.day, 'YYYY-MM-DD') AS day,
+      (SELECT count(*) FROM players p
+        WHERE (p.created_at AT TIME ZONE 'Asia/Kolkata')::date = s.day)           AS signups,
+      (SELECT count(DISTINCT gp.player_id) FROM game_players gp JOIN games g ON g.id=gp.game_id
+        WHERE (g.created_at AT TIME ZONE 'Asia/Kolkata')::date = s.day)           AS played,
+      (SELECT count(*) FROM games g
+        WHERE (g.created_at AT TIME ZONE 'Asia/Kolkata')::date = s.day)           AS games
+    FROM span s ORDER BY s.day
+  `, [days]);
+
+  return { counts: numify(counts[0]), daily: daily.map(numify) };
+}
+
+// ─── Business profile & legal documents ────────────────────────────────────
+
+/**
+ * Held in app_settings-style rows would be over-engineering while there is one
+ * operator and one brand, so this reads from configuration. The panel's form
+ * is read-only against it until there is a reason to make it editable.
+ */
+export function businessProfile(config) {
+  return {
+    legal_name: 'ServerPe App Solutions',
+    brand_name: config.brandName,
+    whatsapp_number: config.whatsapp.businessNumber,
+    support_email: null,
+    gst_number: null,
+    address: null,
+    place_of_supply: null,
+    timezone: config.timezone,
+  };
+}
+
+/**
+ * The policies page is rendered from code today rather than stored as editable
+ * documents, so this describes what actually exists instead of returning an
+ * empty list that reads as "something is broken".
+ */
+export function legalDocuments(config, policyVersion) {
+  return [
+    {
+      doc_key: 'terms',
+      title: 'Terms, Privacy & Fair Play',
+      summary: 'Shown in WhatsApp before a player can join, and linked from every consent card.',
+      version: policyVersion,
+      is_active: true,
+      requires_consent: true,
+      url: `${config.publicRoot}/policies`,
+      editable: false,
+    },
+  ];
 }
 
 // ─── Feedback ──────────────────────────────────────────────────────────────
@@ -615,6 +955,189 @@ export async function blockHistory(waId) {
     [waId],
   );
   return { rows };
+}
+
+// ─── Operations health ─────────────────────────────────────────────────────
+
+/**
+ * The things that quietly go wrong, which no other screen would surface.
+ *
+ * Each of these was chosen because it is a leading indicator: it tells you
+ * something is degrading while you can still fix it, rather than reporting
+ * that yesterday was bad.
+ */
+export async function opsHealth({ range = '7d' } = {}) {
+  const { interval } = rangeToInterval(range);
+
+  const [funnelGap, reconnects, drift, delivery, unclaimed, devices, abandoned] = await Promise.all([
+    // 1. Seated but never opened their board. These players got a link and
+    //    never arrived - the single biggest silent drop-off in the product.
+    query(`
+      SELECT count(*)::int AS seated,
+             count(*) FILTER (WHERE bs.player_id IS NULL)::int AS never_opened
+        FROM game_players gp
+        JOIN games g ON g.id = gp.game_id
+        LEFT JOIN LATERAL (
+          SELECT 1 AS player_id FROM board_sessions b
+           WHERE b.game_id = gp.game_id AND b.player_id = gp.player_id LIMIT 1
+        ) bs ON true
+       WHERE g.created_at > now() - $1::interval`, [interval]),
+
+    // 2. Boards that kept reconnecting. A high stream_opens count on one
+    //    session is the WhatsApp in-app browser suspending, not a bug.
+    query(`
+      SELECT count(*)::int                                   AS sessions,
+             count(*) FILTER (WHERE stream_opens > 3)::int    AS flapping,
+             count(*) FILTER (WHERE in_app_browser)::int      AS in_app,
+             COALESCE(round(avg(stream_opens)::numeric, 1), 0) AS avg_reconnects
+        FROM board_sessions
+       WHERE first_seen_at > now() - $1::interval`, [interval]),
+
+    // 3. Draw pacing. If actual gaps exceed the configured interval the
+    //    scheduler is falling behind, which players feel as a stuttering game.
+    query(`
+      SELECT COALESCE(round(avg(gap)::numeric, 2), 0) AS avg_gap_seconds,
+             COALESCE(round(max(gap)::numeric, 2), 0) AS worst_gap_seconds,
+             count(*) FILTER (WHERE gap > 30)::int     AS stalls
+        FROM (
+          SELECT EXTRACT(EPOCH FROM (drawn_at - lag(drawn_at)
+                 OVER (PARTITION BY game_id ORDER BY seq))) AS gap
+            FROM draws WHERE drawn_at > now() - $1::interval
+        ) t WHERE gap IS NOT NULL`, [interval]),
+
+    // 4. Messages we could not deliver.
+    query(`
+      SELECT count(*)::int                                  AS sent,
+             count(*) FILTER (WHERE status='failed')::int    AS failed,
+             count(*) FILTER (WHERE status='blocked')::int   AS blocked
+        FROM messages
+       WHERE direction='out' AND created_at > now() - $1::interval`, [interval]),
+
+    // 5. Prizes nobody claimed. A high rate means players are not noticing
+    //    they have won - a UI problem wearing a gameplay costume.
+    query(`
+      SELECT count(*)::int * 6                                AS possible,
+             (SELECT count(*)::int FROM claims c JOIN games g2 ON g2.id=c.game_id
+               WHERE c.status='awarded' AND g2.ended_at > now() - $1::interval) AS awarded
+        FROM games WHERE status='finished' AND ended_at > now() - $1::interval`, [interval]),
+
+    // 6. What people actually play on, so the board is tested on the right thing.
+    query(`
+      SELECT COALESCE(device_type,'unknown') AS device_type, count(*)::int AS count
+        FROM board_sessions WHERE first_seen_at > now() - $1::interval
+       GROUP BY 1 ORDER BY 2 DESC`, [interval]),
+
+    // 7. Rooms created that never started. Hosts giving up before play.
+    query(`
+      SELECT count(*)::int                                        AS created,
+             count(*) FILTER (WHERE status='lobby')::int           AS still_waiting,
+             count(*) FILTER (WHERE started_at IS NULL
+                                AND status <> 'lobby')::int        AS never_started
+        FROM games WHERE created_at > now() - $1::interval`, [interval]),
+  ]);
+
+  const u = numify(unclaimed.rows[0]);
+  return {
+    range,
+    boardsNeverOpened: numify(funnelGap.rows[0]),
+    connections: numify(reconnects.rows[0]),
+    drawPacing: numify(drift.rows[0]),
+    delivery: numify(delivery.rows[0]),
+    prizes: {
+      possible: u.possible,
+      awarded: u.awarded,
+      unclaimedPct: u.possible ? Math.round(((u.possible - u.awarded) / u.possible) * 100) : 0,
+    },
+    devices: devices.rows.map(numify),
+    rooms: numify(abandoned.rows[0]),
+  };
+}
+
+/**
+ * When people actually play, as an hour-by-weekday grid.
+ *
+ * The most actionable single chart for an operator: it says when to be
+ * available, when to run a promotion, and when it is safe to deploy.
+ */
+export async function playHeatmap({ days = 30 } = {}) {
+  const { rows } = await query(`
+    SELECT EXTRACT(DOW  FROM created_at AT TIME ZONE 'Asia/Kolkata')::int AS weekday,
+           EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata')::int AS hour,
+           count(*)::int AS games
+      FROM games
+     WHERE created_at > now() - make_interval(days => $1)
+     GROUP BY 1, 2`, [days]);
+  return rows.map(numify);
+}
+
+// ─── Maintenance ───────────────────────────────────────────────────────────
+
+/**
+ * Tables wiped by a full cleanup, in dependency order so foreign keys never
+ * block the delete.
+ *
+ * Everything here is GAME data. What is deliberately NOT in this list:
+ *
+ *   blocked_numbers, block_history  a moderation record. Someone blocked for
+ *                                   abuse must not come back because an
+ *                                   operator tidied the database.
+ *   admin_sessions                  you would sign yourself out mid-cleanup.
+ *   admin_login_attempts            the lockout counter is a security control.
+ *
+ * Policies and lookup data are not tables at all - the policies page is
+ * rendered from code and lookup reads the player tables - so there is nothing
+ * of theirs to protect here.
+ */
+const WIPE_ORDER = [
+  'analytics_events',
+  'board_sessions',
+  'feedback',
+  'claims',
+  'draw_answers',
+  'draws',
+  'entries',
+  'game_players',
+  'games',
+  'messages',
+  'processed_messages',
+  'consents',
+  'player_states',
+  'players',
+];
+
+export const PROTECTED_TABLES = [
+  'blocked_numbers', 'block_history', 'admin_sessions', 'admin_login_attempts',
+];
+
+/**
+ * Empties every game table. Irreversible, so the caller must ask for it
+ * explicitly; there is no "probably meant this" path into here.
+ *
+ * Runs as one transaction: a half-wiped database with orphaned games would be
+ * worse than either outcome.
+ */
+export async function wipeGameData() {
+  const client = await (await import('../db/pool.js')).pool.connect();
+  const deleted = {};
+  try {
+    await client.query('BEGIN');
+    for (const table of WIPE_ORDER) {
+      const res = await client.query(`DELETE FROM ${table}`);
+      deleted[table] = res.rowCount;
+    }
+    // Ids restart from 1, so a fresh database looks fresh rather than
+    // carrying on from game #97.
+    for (const table of WIPE_ORDER) {
+      await client.query(`ALTER SEQUENCE IF EXISTS ${table}_id_seq RESTART WITH 1`);
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  return { deleted, kept: PROTECTED_TABLES };
 }
 
 // ─── helpers ───────────────────────────────────────────────────────────────

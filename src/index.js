@@ -10,6 +10,7 @@ import { startScheduler, stopScheduler } from './scheduler/draw.scheduler.js';
 import { closeAll } from './services/live.service.js';
 import { setOutboundRecorder } from './whatsapp/client.js';
 import { logOutbound } from './services/player.service.js';
+import { loadSettings } from './services/settings.service.js';
 
 function banner() {
   const webhookUrl = `${config.publicRoot}${config.whatsapp.webhookPath}`;
@@ -55,6 +56,7 @@ function installCrashGuards() {
 async function main() {
   installCrashGuards();
   await assertConnection();
+  await loadSettings();
 
   // Every outbound WhatsApp message lands in the conversation log with its
   // delivery outcome, so a silent failure is visible in the admin panel.

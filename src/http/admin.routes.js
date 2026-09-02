@@ -18,6 +18,8 @@ import {
   login, revokeSession, listSessions, requireAdmin, purgeExpired,
 } from '../services/admin-session.service.js';
 import * as data from '../services/admin-data.service.js';
+import { POLICY_VERSION } from '../services/player.service.js';
+import * as settings from '../services/settings.service.js';
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const ok = (res, payload) => res.json({ data: payload });
@@ -154,6 +156,31 @@ export function adminRoutes() {
   router.get('/games/:id/timeline', idParam, wrap(async (req, res) =>
     ok(res, await data.gameTimeline(req.id, int(req.query.limit, 400)))));
 
+  // ─── game audit ──────────────────────────────────────────────────────────
+
+  router.get('/audit/hosts', wrap(async (req, res) =>
+    ok(res, await data.auditHosts({
+      range: String(req.query.range ?? '7d'),
+      search: req.query.search || null,
+    }))));
+
+  router.get('/audit/activity', wrap(async (req, res) =>
+    ok(res, await data.auditActivity({ range: String(req.query.range ?? '7d') }))));
+
+  router.get('/audit/games/:id', idParam, wrap(async (req, res) => {
+    const found = await data.auditGame(req.id);
+    if (!found) return res.status(404).json({ error: 'No such game' });
+    ok(res, found);
+  }));
+
+  // ─── operations health ───────────────────────────────────────────────────
+
+  router.get('/ops/health', wrap(async (req, res) =>
+    ok(res, await data.opsHealth({ range: String(req.query.range ?? '7d') }))));
+
+  router.get('/ops/heatmap', wrap(async (req, res) =>
+    ok(res, await data.playHeatmap({ days: int(req.query.days, 30) }))));
+
   // ─── hosts ───────────────────────────────────────────────────────────────
 
   router.get('/hosts', wrap(async (req, res) =>
@@ -171,11 +198,14 @@ export function adminRoutes() {
 
   // ─── events ──────────────────────────────────────────────────────────────
 
+  // Returns the ARRAY, not { events, types }. The panel fetches this and
+  // /events/types separately and combines them itself, so wrapping the list in
+  // an object made data.events.map() blow up the whole page.
   router.get('/events', wrap(async (req, res) =>
-    ok(res, {
-      events: await data.listEvents({ limit: int(req.query.limit, 200), type: req.query.type || null }),
-      types: await data.eventTypes({ days: int(req.query.days, 30) }),
-    })));
+    ok(res, await data.listEvents({
+      limit: int(req.query.limit, 200),
+      type: req.query.type || null,
+    }))));
 
   router.get('/events/types', wrap(async (req, res) =>
     ok(res, await data.eventTypes({ days: int(req.query.days, 30) }))));
@@ -290,12 +320,10 @@ export function adminRoutes() {
         FROM pg_stat_user_tables ORDER BY n_live_tup DESC`);
 
     ok(res, {
-      business: {
-        brand_name: config.brandName,
-        whatsapp_number: config.whatsapp.businessNumber,
-        public_base_url: config.publicRoot,
-        timezone: config.timezone,
-      },
+      business: data.businessProfile(config),
+      docs: data.legalDocuments(config, POLICY_VERSION),
+      // Read by the trial-date form on this screen.
+      ...settings.trialState(),
       trial: await trialState(),
       game: config.game,
       whatsapp: {
@@ -308,14 +336,106 @@ export function adminRoutes() {
       consent: await data.consentStats(),
       sessions: await listSessions(),
       queues: { tables },
-      // Legal documents are managed as files elsewhere; the policies page is
-      // rendered from code today, so there is nothing to list.
-      docs: [],
     });
   }));
 
-  router.get('/trial',          wrap(async (_q, res) => ok(res, await trialState())));
-  router.get('/settings/trial', wrap(async (_q, res) => ok(res, await trialState())));
+  router.get('/trial', wrap(async (req, res) => {
+    const [state, report] = await Promise.all([
+      trialState(),
+      data.trialReport({ days: int(req.query.days, 30) }),
+    ]);
+    ok(res, {
+      ...report,
+      daysRemaining: state.days_left,
+      endsOn: state.free_trial_ends_at,
+      isOver: !state.active,
+      monetizationEnabled: state.monetization_enabled,
+    });
+  }));
+
+  router.get('/settings/trial', wrap(async (_q, res) => ok(res, settings.trialState())));
+
+  /**
+   * Saves the free-trial end date, or resets it to the .env default when
+   * `endsAt` is null. Persisted rather than held in memory, so it survives a
+   * restart - a trial date that quietly reverted on deploy would be worse than
+   * not being editable at all.
+   */
+  router.put('/settings/trial', wrap(async (req, res) => {
+    const endsAt = req.body?.endsAt ?? null;
+    try {
+      const state = await settings.setTrialEndsAt(endsAt, req.admin?.label ?? 'admin');
+      ok(res, state);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  }));
+
+  // ─── deferred subsystems ─────────────────────────────────────────────────
+  //
+  // Payments, wallets, ticketing and notifications do not exist: the platform
+  // is free during the trial and none of them has been built. These endpoints
+  // answer with real, empty structures and an explicit `available: false`,
+  // rather than 404ing and filling the panel's console with errors.
+  //
+  // Nothing here is invented. During a free trial the revenue genuinely is
+  // zero and there genuinely are no wallets - the numbers are accurate, and
+  // the flag says why.
+
+  const notBuilt = (extra = {}) => ({ available: false, reason: 'Not enabled during the free trial', ...extra });
+
+  router.get('/revenue', wrap(async (_q, res) => ok(res, notBuilt({
+    daily: [],
+    totals: { grossPaise: 0, netPaise: 0, gstPaise: 0, games: 0 },
+    gstRatePct: 0,
+    pricesIncludeGst: true,
+  }))));
+
+  router.get('/wallets', wrap(async (_q, res) => ok(res, notBuilt({
+    items: [],
+    totals: {
+      total_balance_paise: 0, wallets_with_credit: 0,
+      free_games_outstanding: 0, wallets: 0,
+    },
+  }))));
+
+  router.get('/wallets/:id', idParam, wrap(async (_q, res) =>
+    ok(res, notBuilt({ wallet: null, transactions: [] }))));
+
+  router.get('/support/tickets', wrap(async (_q, res) => ok(res, notBuilt({
+    items: [],
+    stats: { open: 0, in_progress: 0, resolved: 0, closed: 0, total: 0 },
+  }))));
+
+  router.get('/documents', wrap(async (_q, res) => ok(res, [])));
+
+  router.get('/notifications', wrap(async (_q, res) => ok(res, notBuilt({
+    status: {
+      enabled: false, configured: false,
+      digestMinutes: 0, from: null, to: null,
+    },
+    settings: [],
+    pending: 0,
+    // Every field the digest preview reads. Filled in completely rather than
+    // partially: a missing nested key here is an undefined-property crash that
+    // takes the whole page down, not a blank cell.
+    preview: {
+      players: { new: 0, active: 0 },
+      games: { created: 0, started: 0, completed: 0, abandoned: 0 },
+      messages: { inbound: 0, outbound: 0, failed: 0 },
+      feedback: { count: 0 },
+      trial: { signups: 0, played: 0, returning: 0, endsAt: settings.trialEndsAt() },
+      prizes: 0,
+      tickets: 0,
+      blocked: 0,
+    },
+    log: [],
+  }))));
+
+  router.get('/business', wrap(async (_q, res) => ok(res, data.businessProfile(config))));
+
+  router.get('/legal/documents', wrap(async (_q, res) =>
+    ok(res, data.legalDocuments(config, POLICY_VERSION))));
 
   router.get('/queues', wrap(async (_req, res) => {
     const { rows } = await query(`
@@ -324,7 +444,35 @@ export function adminRoutes() {
     ok(res, { tables: rows });
   }));
 
+  /**
+   * Two very different operations behind one button:
+   *
+   *   { scope: 'old' }  (default)  trims logs older than `days`
+   *   { scope: 'all', confirm: 'DELETE ALL GAME DATA' }  empties every game
+   *                                table, keeping moderation and admin records
+   *
+   * The full wipe needs the exact confirmation phrase. A destructive action
+   * that fires on a single flag is one mis-click from erasing everything.
+   */
   router.post('/maintenance/purge', wrap(async (req, res) => {
+    if (req.body?.scope === 'all') {
+      const PHRASE = 'DELETE ALL GAME DATA';
+      if (req.body?.confirm !== PHRASE) {
+        return res.status(400).json({
+          error: `To wipe everything, send confirm: "${PHRASE}"`,
+          protected: data.PROTECTED_TABLES,
+        });
+      }
+      const result = await data.wipeGameData();
+      log.warn('FULL DATA WIPE', { by: req.admin?.label, ip: requestInfo(req).ip });
+      return ok(res, {
+        scope: 'all',
+        deleted: result.deleted,
+        kept: result.kept,
+        total: Object.values(result.deleted).reduce((a, b) => a + b, 0),
+      });
+    }
+
     const days = int(req.body?.days, 90);
     const messages = await query(
       `DELETE FROM messages WHERE created_at < now() - make_interval(days => $1)`, [days]);
@@ -350,14 +498,13 @@ export function adminRoutes() {
 }
 
 async function trialState() {
-  const endsAt = new Date(config.freeTrialEndsAt);
-  const daysLeft = Math.ceil((endsAt.getTime() - Date.now()) / 86_400_000);
+  const state = settings.trialState();
   const { rows } = await query('SELECT count(*)::int AS games FROM games');
   return {
-    free_trial_ends_at: config.freeTrialEndsAt,
-    days_left: daysLeft,
-    active: daysLeft > 0,
-    monetization_enabled: false,
+    free_trial_ends_at: state.freeTrialEndsAt,
+    days_left: state.daysRemaining,
+    active: !state.isOver,
+    monetization_enabled: state.monetizationEnabled,
     games_played: rows[0].games,
   };
 }

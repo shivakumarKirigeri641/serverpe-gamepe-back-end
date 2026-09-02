@@ -5,6 +5,7 @@
  * the button ids matter, and those live in BUTTONS below.
  */
 import { config } from '../config/env.js';
+import { trialEndsAt } from './settings.service.js';
 
 /** Button ids are the contract between what we send and what comes back. */
 export const BUTTONS = {
@@ -19,11 +20,11 @@ const brand = () => config.brandName;
 
 function trialEndsOn() {
   try {
-    return new Date(config.freeTrialEndsAt).toLocaleDateString('en-IN', {
+    return new Date(trialEndsAt()).toLocaleDateString('en-IN', {
       day: 'numeric', month: 'long', year: 'numeric', timeZone: config.timezone,
     });
   } catch {
-    return config.freeTrialEndsAt;
+    return trialEndsAt();
   }
 }
 
@@ -100,6 +101,25 @@ export const copy = {
   unknown: () =>
     `Sorry, I didn't understand that.\n\n` +
     `Type *hi* to see the menu.`,
+
+  /** After a star is tapped. The comment is invited, never demanded. */
+  ratingThanks: (rating) =>
+    (rating >= 4
+      ? `Wonderful — thank you! 🌟\n\n`
+      : rating >= 3
+        ? `Thanks for the honest rating. 🙏\n\n`
+        : `Sorry it missed the mark — thank you for saying so. 🙏\n\n`) +
+    `Anything you'd like to add? Just type it and send.\n\n` +
+    `_Or reply *skip* if you'd rather not._`,
+
+  feedbackDone: (hadComment) =>
+    (hadComment ? `Thank you — noted. 💛\n\n` : `No problem at all. 💛\n\n`) +
+    `Type *hi* whenever you want another game.`,
+
+  /** Sent with the end-of-game summary. */
+  gameReport: (code, url) =>
+    `Your full report for game *${code}* — your ticket, every number called, ` +
+    `and how you marked it:\n${url}`,
 
   hostStartWarning: () =>
     `Once you start, ${brand()} takes over as host and you become a regular player. ` +

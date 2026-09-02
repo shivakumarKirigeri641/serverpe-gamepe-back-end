@@ -10,11 +10,13 @@ import { log } from '../utils/logger.js';
 import { config } from '../config/env.js';
 import { verifyBoardToken } from '../utils/code.js';
 import { boardPage } from './board-page.js';
+import { reportPage } from './report-page.js';
+import { playerReport } from '../services/gameover.service.js';
 import {
   getGameById, getLobby, getEntry, isPlayerInGame, startGame, GameError,
 } from '../services/game.service.js';
 import { getPlayerById, displayNameFor } from '../services/player.service.js';
-import { getDraws, getAnswers, recordAnswer } from '../services/round.service.js';
+import { getDraws, getAnswers, recordAnswer, answerProgress } from '../services/round.service.js';
 import { attemptClaim, getClaimState, getResults } from '../services/claim.service.js';
 import { subscribe, sendTo, broadcast } from '../services/live.service.js';
 import { taglineFor } from '../games/tambola/taglines.js';
@@ -62,7 +64,7 @@ export function boardRoutes() {
     // Every state fetch is a page open or a reconnect, so this is the most
     // reliable place to keep the session and the player's device columns fresh.
     await trackBoardRequest(req, {
-      gameId: req.game.id, playerId: req.player.id, type: 'board_open',
+      gameId: req.game.id, playerId: req.player.id, type: 'board.opened',
       properties: { status: req.game.status },
     });
     res.json(await snapshot(req.game.id, req.player.id));
@@ -87,7 +89,7 @@ export function boardRoutes() {
     // session is the signature of a connection that keeps dropping, which is
     // exactly what the WhatsApp in-app browser does when backgrounded.
     await trackBoardRequest(req, {
-      gameId: req.game.id, playerId: req.player.id, type: 'stream_open', isStreamOpen: true,
+      gameId: req.game.id, playerId: req.player.id, type: 'board.reconnected', isStreamOpen: true,
     });
 
     subscribe(req.game.id, res);
@@ -97,10 +99,14 @@ export function boardRoutes() {
   router.post('/board/:token/start', resolve, wrap(async (req, res) => {
     try {
       const game = await startGame({ gameId: req.game.id, playerId: req.player.id });
-      broadcast(game.id, 'started', { startsInSeconds: game.draw_interval_seconds });
-      broadcast(game.id, 'state_stale', {});
+      // The countdown every board shows IS the schedule: next_draw_at is set
+      // this many seconds out, so the number lands as the counter hits zero.
+      broadcast(game.id, 'started', {
+        countdownSeconds: config.game.startCountdownSeconds,
+        drawInterval: game.draw_interval_seconds,
+      });
       await recordEvent({
-        type: 'game_start', source: 'board', req,
+        type: 'game.started', source: 'board', req,
         playerId: req.player.id, gameId: game.id,
         properties: { expectedPlayers: game.expected_players },
       });
@@ -121,16 +127,42 @@ export function boardRoutes() {
     });
     if (!result.ok) return res.status(400).json({ error: result.reason });
 
+    // `audit` holds whether they were right. It goes to the event log and
+    // nowhere near the response - players find out when the game ends.
+    const { audit, ...forPlayer } = result;
+
     await recordEvent({
-      type: 'answer', source: 'board', req,
+      type: 'game.ack', source: 'board', req,
       playerId: req.player.id, gameId: req.game.id,
       properties: {
         seq, value: result.value, answer: result.answer,
-        onTicket: result.onTicket, wasCorrect: result.wasCorrect,
+        onTicket: audit.onTicket, wasCorrect: audit.wasCorrect,
         duplicate: result.alreadyAnswered,
       },
     });
-    res.json(result);
+    res.json(forPlayer);
+  }));
+
+  /**
+   * The per-player report, on the same signed token as the board. Readable
+   * long after the game - it is the link WhatsApp sends when a game ends.
+   */
+  router.get('/report/:token', wrap(async (req, res) => {
+    const ids = verifyBoardToken(req.params.token);
+    if (!ids) {
+      return res.status(403).type('html')
+        .send(errorPage('This report link is not valid.', 'Ask your host to send it again.'));
+    }
+    const report = await playerReport(ids.gameId, ids.playerId);
+    if (!report) {
+      return res.status(404).type('html')
+        .send(errorPage('That report no longer exists.', 'The game may have been cleared.'));
+    }
+    await recordEvent({
+      type: 'report.opened', source: 'board', req,
+      playerId: ids.playerId, gameId: ids.gameId,
+    });
+    res.type('html').send(reportPage(report));
   }));
 
   router.post('/board/:token/claim', resolve, wrap(async (req, res) => {
@@ -142,7 +174,7 @@ export function boardRoutes() {
       gameId: req.game.id, playerId: req.player.id, claimType, ok: result.ok,
     });
     await recordEvent({
-      type: result.ok ? 'claim_awarded' : 'claim_rejected', source: 'board', req,
+      type: result.ok ? 'claim.awarded' : 'claim.rejected', source: 'board', req,
       playerId: req.player.id, gameId: req.game.id,
       properties: { claimType, reason: result.reason ?? null },
     });
@@ -199,6 +231,14 @@ async function snapshot(gameId, playerId) {
     current: latest
       ? { seq: latest.seq, value: latest.value, tagline: taglineFor(latest.value) }
       : null,
+    // Whether this player has already answered the current number, and how
+    // many others have - so a reopened page shows the waiting state truthfully
+    // instead of offering buttons that were already used.
+    yourAnswer: latest
+      ? (answers.find((a) => a.value === latest.value)?.answer ?? null)
+      : null,
+    progress: latest ? await answerProgress(gameId, latest.seq) : { answered: 0, total: lobby.joined },
+    countdownSeconds: config.game.startCountdownSeconds,
     // How long the current number has left, so a page opened mid-tick shows a
     // truthful countdown instead of restarting it.
     secondsLeft: game.next_draw_at
@@ -206,6 +246,7 @@ async function snapshot(gameId, playerId) {
       : null,
     prizes: claims.prizes,
     brand: config.brandName,
+    businessNumber: config.whatsapp.businessNumber,
   };
 
   if (game.status === 'finished') state.results = await getResults(gameId);

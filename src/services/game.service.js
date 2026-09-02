@@ -161,14 +161,17 @@ export async function startGame({ gameId, playerId }) {
       throw new GameError('too_few_players', `At least ${config.game.minPlayers} players are needed to start`);
     }
 
+    // The first number is held back by a short pre-roll rather than the full
+    // draw interval, so the countdown everyone sees on screen is the real
+    // schedule and not an animation running alongside it.
     const { rows: started } = await client.query(
       `UPDATE games
           SET status = 'running',
               started_at = now(),
-              next_draw_at = now() + make_interval(secs => draw_interval_seconds)
+              next_draw_at = now() + make_interval(secs => $2)
         WHERE id = $1
     RETURNING *`,
-      [gameId],
+      [gameId, config.game.startCountdownSeconds],
     );
     return started[0];
   });
