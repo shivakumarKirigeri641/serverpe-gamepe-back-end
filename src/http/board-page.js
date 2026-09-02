@@ -94,6 +94,32 @@ header{display:flex;align-items:center;gap:10px;padding:6px 2px 12px}
 .waiting b{color:var(--text)}
 .waiting .left{margin-left:auto;font:700 15px ui-monospace,Menlo,monospace;color:var(--gold)}
 
+/* ---- the invite link, for the host ---- */
+.invite{background:rgba(212,165,55,.08);border:1px solid rgba(212,165,55,.3);
+  border-radius:12px;padding:12px;margin-top:14px}
+.invite-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--gold);font-weight:700;margin-bottom:8px}
+.invite-row{display:flex;gap:8px;align-items:stretch}
+.invite-row code{flex:1;min-width:0;background:rgba(0,0,0,.35);border-radius:8px;
+  padding:10px;font:12px/1.35 ui-monospace,Menlo,monospace;color:var(--text);
+  word-break:break-all;max-height:52px;overflow:hidden}
+.copy{flex:none;padding:0 16px;border-radius:8px;border:0;cursor:pointer;
+  background:var(--gold);color:#2b2118;font:700 13px system-ui}
+.copy.done{background:var(--ok);color:#fff}
+.invite-hint{font-size:12px;color:var(--dim);margin-top:8px}
+
+/* ---- a player waiting in the lobby ---- */
+.waiting-host{display:flex;gap:12px;align-items:center;margin-top:14px;
+  background:rgba(255,255,255,.04);border:1px solid var(--line);
+  border-radius:12px;padding:13px}
+.waiting-host .pulse{width:11px;height:11px;border-radius:50%;background:var(--gold);
+  flex:none;animation:pulse 1.6s ease-out infinite}
+@keyframes pulse{
+  0%{box-shadow:0 0 0 0 rgba(212,165,55,.6)}
+  70%{box-shadow:0 0 0 11px rgba(212,165,55,0)}
+  100%{box-shadow:0 0 0 0 rgba(212,165,55,0)}
+}
+
 /* ---- the 5-second countdown before the first number ---- */
 #countdown{
   position:fixed;inset:0;z-index:60;display:grid;place-items:center;
@@ -112,8 +138,30 @@ header{display:flex;align-items:center;gap:10px;padding:6px 2px 12px}
 /* Re-triggered on each tick, so every digit lands with the same beat. */
 #countdown .n.tick{animation:tick .9s cubic-bezier(.2,1.4,.35,1)}
 @keyframes tick{0%{transform:scale(.35);opacity:0}45%{transform:scale(1.14);opacity:1}100%{transform:scale(1);opacity:1}}
+
+/* The ring beats once per second, like a pulse. Two quick squeezes per beat -
+   a single ease looks like breathing; a double looks like a heart. */
+#countdown .ring{animation:heartbeat 1s ease-in-out infinite}
+@keyframes heartbeat{
+  0%{transform:scale(1)}
+  14%{transform:scale(1.07)}
+  28%{transform:scale(1)}
+  42%{transform:scale(1.05)}
+  70%,100%{transform:scale(1)}
+}
 #countdown .cap{margin-top:22px;text-align:center;color:#f7dfa5;font-size:15px;letter-spacing:.04em}
-#countdown .go{font:800 52px/1 ui-rounded,system-ui;color:var(--gold)}
+
+/* The moment it hits zero. */
+#countdown .go{
+  font:800 44px/1.1 ui-rounded,system-ui;color:var(--gold);text-align:center;
+  animation:burst .6s cubic-bezier(.2,1.5,.35,1);
+}
+@keyframes burst{0%{transform:scale(.4) rotate(-6deg);opacity:0}
+  60%{transform:scale(1.15) rotate(2deg);opacity:1}100%{transform:scale(1) rotate(0);opacity:1}}
+#countdown.go-time .ring{
+  animation:none;border-color:rgba(212,165,55,.8);
+  box-shadow:0 0 120px rgba(212,165,55,.55), inset 0 0 60px rgba(212,165,55,.25);
+}
 
 /* ---- game over celebration ---- */
 .celebrate{
@@ -346,20 +394,37 @@ details.called[open] summary::after{transform:rotate(180deg)}
 
     var n = seconds;
     var node = document.getElementById('cdN');
+    var cap = el.querySelector('.cap');
+
     var paint = function(){
-      if (n > 0) { node.textContent = n; node.className = 'n'; void node.offsetWidth; node.className = 'n tick'; }
-      else { node.innerHTML = '<span class="go">GO!</span>'; }
+      if (n > 0) {
+        node.textContent = n;
+        // Re-trigger the animation by removing and re-adding the class.
+        node.className = 'n'; void node.offsetWidth; node.className = 'n tick';
+      } else {
+        // Zero: the heartbeat stops, the ring flares, and the numbers start.
+        el.classList.add('go-time');
+        node.innerHTML = '<span class="go">BINGO!</span>';
+        cap.textContent = 'Numbers starting…';
+      }
     };
+
     paint();
     countdownTimer = setInterval(function(){
       n--;
       if (n < 0) { hideCountdown(); refresh(); return; }
       paint();
+      // Hold "BINGO!" on screen for a moment before the board appears, rather
+      // than flashing it for a frame.
+      if (n === 0) { clearInterval(countdownTimer); countdownTimer = setTimeout(function(){
+        hideCountdown(); refresh();
+      }, 1100); }
     }, 1000);
   }
 
   function hideCountdown(){
-    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    // Could be either by now - the last tick swaps the interval for a timeout.
+    if (countdownTimer) { clearInterval(countdownTimer); clearTimeout(countdownTimer); countdownTimer = null; }
     var el = document.getElementById('countdown');
     if (el) el.remove();
   }
@@ -409,12 +474,45 @@ details.called[open] summary::after{transform:rotate(180deg)}
       }).join('') + '</ul>';
 
     if (s.you.isHost) {
-      html += '<button class="btn" id="startBtn"' + (s.canStart ? '' : ' disabled') + '>Start Game</button>' +
-        '<div class="warn">Once you start, ' + esc(s.brand) + ' takes over as host and you play as a ' +
-        'normal player. No one else can join after that.</div>';
+      // The link, visibly, with one tap to copy it. A host who cannot find the
+      // link cannot fill the room, and reading a URL aloud is not an option.
+      if (s.invite) {
+        html += '<div class="invite">' +
+          '<div class="invite-label">Share this link with your players</div>' +
+          '<div class="invite-row">' +
+            '<code id="inviteLink">' + esc(s.invite) + '</code>' +
+            '<button class="copy" id="copyBtn">Copy</button>' +
+          '</div>' +
+          '<div class="invite-hint">Paste it into your WhatsApp group. They tap it, ' +
+            'accept the terms, and they are in.</div>' +
+        '</div>';
+      }
+
+      var missing = Math.max(0, expected - s.joined);
+      html += '<button class="btn" id="startBtn"' + (s.canStart ? '' : ' disabled') + '>' +
+        'Start Game' + (missing > 0 ? ' with ' + s.joined + ' of ' + expected : '') + '</button>' +
+        '<div class="warn">' +
+          (missing > 0
+            ? '<b>' + missing + ' of your ' + expected + ' players ' +
+              (missing === 1 ? 'has' : 'have') + ' not joined yet.</b> '
+            : '') +
+          'Once you start, <b>nobody else can join</b> — latecomers will be turned away. ' +
+          esc(s.brand) + ' becomes the host and calls the numbers, and you play as an ' +
+          'ordinary player from then on.' +
+        '</div>';
     } else {
-      html += '<div class="muted" style="margin-top:12px">Your ticket is ready. ' +
-        'The game begins when your host starts it.</div>';
+      // A player waiting needs to know WHO they are waiting for and that
+      // something is still happening - otherwise a quiet screen reads as broken.
+      html += '<div class="waiting-host">' +
+        '<span class="pulse"></span>' +
+        '<div><b>Waiting for ' + esc(s.hostName || 'your host') + ' to start</b>' +
+        '<div class="muted" style="font-size:13px;margin-top:2px">' +
+          s.joined + ' of ' + expected + ' here' +
+          (need > 0 ? ' · ' + need + ' more needed' : ' · ready when they are') +
+        '</div></div></div>' +
+        '<div class="muted" style="margin-top:10px;font-size:13.5px">' +
+          'Your ticket is sealed until the game begins. Keep this screen open — ' +
+          'it starts by itself.</div>';
     }
 
     // The ticket stays sealed until the game starts. Showing it in the lobby
@@ -428,6 +526,32 @@ details.called[open] summary::after{transform:rotate(180deg)}
       '</div>';
 
     setView(html, 'lobby-' + s.joined + '-' + s.canStart);
+
+    var copyBtn = document.getElementById('copyBtn');
+    if (copyBtn) copyBtn.onclick = function(){
+      var link = document.getElementById('inviteLink').textContent;
+      var done = function(){
+        copyBtn.textContent = 'Copied!';
+        copyBtn.classList.add('done');
+        setTimeout(function(){ copyBtn.textContent = 'Copy'; copyBtn.classList.remove('done'); }, 1800);
+      };
+      // The async clipboard API needs a secure context, which the WhatsApp
+      // in-app browser does not always provide. Fall back to the old trick.
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(link).then(done, legacy);
+      } else { legacy(); }
+
+      function legacy(){
+        var ta = document.createElement('textarea');
+        ta.value = link;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); done(); }
+        catch (e) { toast('Press and hold the link to copy it'); }
+        ta.remove();
+      }
+    };
 
     var b = document.getElementById('startBtn');
     if (b) b.onclick = function(){

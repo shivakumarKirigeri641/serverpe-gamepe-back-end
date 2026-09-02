@@ -40,7 +40,7 @@ export function publicRoutes() {
     name: config.brandName,
     whatsapp_number: config.whatsapp.businessNumber,
     public_base_url: config.publicRoot,
-    policies_url: `${config.publicRoot}/policies`,
+    policies_url: config.policiesUrl,
     // The site falls back to a text wordmark when these are null, which is
     // honest: there is no committed logo set yet.
     primary: {

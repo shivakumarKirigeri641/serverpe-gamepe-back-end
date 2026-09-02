@@ -24,6 +24,7 @@ import {
   createGame, joinGame, getGameByCode, findActiveGameForPlayer, leaveGame, GameError,
 } from './game.service.js';
 import { recordEvent } from './tracking.service.js';
+import { notify } from './notification.service.js';
 import { STATES } from './conversation-states.js';
 import { maintenance } from './settings.service.js';
 import { broadcast } from './live.service.js';
@@ -113,6 +114,14 @@ async function route(player, event) {
 // --- Greeting and consent --------------------------------------------------
 
 async function handleGreeting(player) {
+  // Fired on the greeting, not on every inbound message, so a player working
+  // through a menu does not raise one alert per tap.
+  notify('player.tapped', {
+    title: `${displayNameFor(player)} messaged ${config.brandName}`,
+    lines: [`Number: +${player.wa_id}`, `Name: ${displayNameFor(player)}`],
+    playerId: player.id,
+  });
+
   if (!(await hasConsented(player.id))) {
     await sendText(player.wa_id, copy.greeting());
     await setState(player.id, STATES.AWAITING_CONSENT, {});
@@ -227,6 +236,15 @@ async function createRoom(player, state) {
   }
 
   await setState(player.id, STATES.IN_LOBBY, { gameId: game.id, code: game.code });
+  notify('game.created', {
+    title: `${displayNameFor(player)} created game ${game.code}`,
+    lines: [
+      `Host: ${displayNameFor(player)} (+${player.wa_id})`,
+      `Room: ${game.code}`,
+      `Expecting ${playerCount} players`,
+    ],
+    playerId: player.id, gameId: game.id,
+  });
   await recordEvent({
     type: 'game.created', source: 'whatsapp', playerId: player.id, gameId: game.id,
     properties: { code: game.code, expectedPlayers: playerCount },
@@ -234,7 +252,7 @@ async function createRoom(player, state) {
 
   await sendText(player.wa_id, copy.gameCreated(game.code, inviteUrl(game.code)));
   return sendCtaUrl(player.wa_id, copy.hostStartWarning(), {
-    displayText: 'Open host screen',
+    displayText: 'Open game room',
     url: boardUrl(game.id, player.id),
   });
 }
@@ -343,7 +361,7 @@ async function handleRecentReport(player) {
 async function handleDemo(player) {
   return sendCtaUrl(player.wa_id, copy.demoIntro(), {
     displayText: 'How to play',
-    url: `${config.publicRoot}/public/demo`,
+    url: config.demoUrl,
   });
 }
 

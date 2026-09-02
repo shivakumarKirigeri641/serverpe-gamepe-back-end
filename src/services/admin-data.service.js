@@ -930,7 +930,7 @@ export function legalDocuments(config, policyVersion) {
       version: policyVersion,
       is_active: true,
       requires_consent: true,
-      url: `${config.publicRoot}/policies`,
+      url: config.policiesUrl,
       editable: false,
     },
   ];
@@ -1172,8 +1172,17 @@ const WIPE_ORDER = [
   'players',
 ];
 
+/**
+ * Kept by a full cleanup, and why.
+ *
+ * support_tickets survives because it is correspondence, not game data - and
+ * because the ticket carries its own wa_id, so it stays answerable even once
+ * the player row behind it is gone (its FK is ON DELETE SET NULL, not CASCADE).
+ */
 export const PROTECTED_TABLES = [
-  'blocked_numbers', 'block_history', 'admin_sessions', 'admin_login_attempts', 'app_settings',
+  'blocked_numbers', 'block_history',
+  'support_tickets', 'support_ticket_messages',
+  'admin_sessions', 'admin_login_attempts', 'app_settings',
 ];
 
 /** The exact words an operator must type. Matches the panel's own constant. */

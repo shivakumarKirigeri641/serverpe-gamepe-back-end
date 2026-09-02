@@ -48,6 +48,7 @@ const API_BASE_PATH = (() => {
   if (!raw || raw === '/') return '';
   return ('/' + raw.replace(/^\/+/, '').replace(/\/+$/, ''));
 })();
+const SITE_BASE_URL = optional('SITE_BASE_URL', '').replace(/\/+$/, '');
 const WHATSAPP_ACCESS_TOKEN = optional('WHATSAPP_ACCESS_TOKEN');
 
 // Dry-run mode: without a token we log outbound messages instead of sending.
@@ -151,7 +152,27 @@ export const config = {
   },
 
   /** The marketing site, for links the bot hands out. */
-  siteBaseUrl: optional('SITE_BASE_URL', '').replace(/\/+$/, ''),
+  siteBaseUrl: SITE_BASE_URL,
+
+  /**
+   * Where the policies actually live.
+   *
+   * On the company's own domain whenever SITE_BASE_URL is set. A privacy
+   * policy served from api.mastipe.in reads as somebody else's document, and
+   * Meta, Razorpay and every regulator ask for a link on the brand's own
+   * address. Falls back to this server's own copy so the link is never dead.
+   */
+  policiesUrl: (SITE_BASE_URL || PUBLIC_BASE_URL + API_BASE_PATH) + '/policies',
+
+  /** How-to-play, which genuinely does live on the API - it is generated. */
+  demoUrl: PUBLIC_BASE_URL + API_BASE_PATH + '/public/demo',
+
+  /** Operator alerts. Every trigger's mode is set from the admin panel. */
+  alerts: {
+    enabled: optional('ADMIN_NOTIFICATIONS_ENABLED', 'true') === 'true',
+    recipient: optional('ALERT_RECIPIENT') || optional('ADMINMAIL'),
+    digestMinutes: int('ALERT_DIGEST_MINUTES', 10, { min: 1, max: 1440 }),
+  },
 
   geo: {
     // Server-side IP lookup only - players are never asked for permission.

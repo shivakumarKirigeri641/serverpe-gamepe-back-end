@@ -17,6 +17,7 @@ import { sendText, sendButtons } from '../whatsapp/client.js';
 import { displayNameFor, setState } from './player.service.js';
 import { getResults } from './claim.service.js';
 import { recordEvent } from './tracking.service.js';
+import { notify } from './notification.service.js';
 import { STATES } from './conversation-states.js';
 import { CLAIMS } from '../games/tambola/claims.js';
 import { copy } from './copy.js';
@@ -67,6 +68,20 @@ export async function announceGameOver(gameId) {
   await recordEvent({
     type: 'game.summary_sent', source: 'system', gameId,
     properties: { players: players.length },
+  });
+
+  const champion = results.prizes.find((p) => p.key === 'full_house');
+  notify('game.ended', {
+    title: `Game ${game.code} ended`,
+    lines: [
+      `Room: ${game.code}`,
+      `Reason: ${(game.ended_reason || 'unknown').replace(/_/g, ' ')}`,
+      `Players: ${players.length}`,
+      `Numbers called: ${game.cursor} of 90`,
+      `Full House: ${champion?.winner ?? 'nobody'}`,
+      `Prizes won: ${results.prizes.filter((p) => p.winner).length} of 6`,
+    ],
+    gameId: game.id,
   });
 
   let sent = 0;
@@ -130,6 +145,16 @@ export async function announceGameAbandoned(gameId, { leaverName = null } = {}) 
     [gameId],
   );
 
+  notify('game.abandoned', {
+    title: `Game ${game.code} was abandoned`,
+    lines: [
+      `Room: ${game.code}`,
+      leaverName ? `${leaverName} left` : 'Too few players remained',
+      `${players.length} player(s) were still in it`,
+      `${game.cursor} numbers had been called`,
+    ],
+    gameId,
+  });
   await recordEvent({
     type: 'game.abandoned_sent', source: 'system', gameId,
     properties: { remaining: players.length, leaver: leaverName },

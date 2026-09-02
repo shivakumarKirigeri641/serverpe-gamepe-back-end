@@ -8,6 +8,9 @@
 -- Switch to additive migrations once there are real players to protect.
 -- ===========================================================================
 
+DROP TABLE IF EXISTS notification_log   CASCADE;
+DROP TABLE IF EXISTS notification_queue CASCADE;
+DROP TABLE IF EXISTS notification_settings CASCADE;
 DROP TABLE IF EXISTS support_ticket_messages CASCADE;
 DROP TABLE IF EXISTS support_tickets    CASCADE;
 DROP TABLE IF EXISTS app_settings       CASCADE;
@@ -448,3 +451,59 @@ CREATE TABLE support_ticket_messages (
   created_at   timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX support_ticket_messages_idx ON support_ticket_messages (ticket_id, created_at);
+
+
+-- --- Operator notifications ------------------------------------------------
+
+/*
+ * One row per alert type, so an operator can turn each one down without a
+ * deploy. Seeded below; new triggers appear with their default mode the first
+ * time the server starts after they are added.
+ *
+ * mode:
+ *   instant - emailed the moment it happens
+ *   digest  - collected into the periodic email
+ *   off     - still recorded in analytics_events, just never emailed
+ */
+CREATE TABLE notification_settings (
+  trigger_key text        PRIMARY KEY,
+  mode        text        NOT NULL DEFAULT 'digest'
+                CHECK (mode IN ('instant','digest','off')),
+  recipient   text,
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  updated_by  text
+);
+
+/*
+ * Things that happened and have not been emailed yet.
+ *
+ * A queue rather than a straight send, because the high-frequency triggers -
+ * every "hi", every game start - would otherwise be hundreds of separate
+ * emails a day. Instant ones are sent and marked immediately; the rest wait
+ * for the digest.
+ */
+CREATE TABLE notification_queue (
+  id          bigserial   PRIMARY KEY,
+  trigger_key text        NOT NULL,
+  subject     text        NOT NULL,
+  body        text        NOT NULL,
+  player_id   bigint      REFERENCES players(id) ON DELETE SET NULL,
+  game_id     bigint      REFERENCES games(id)   ON DELETE SET NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  sent_at     timestamptz
+);
+CREATE INDEX notification_queue_pending_idx ON notification_queue (created_at)
+  WHERE sent_at IS NULL;
+
+/* What was actually emailed, so a silent failure is visible. */
+CREATE TABLE notification_log (
+  id          bigserial   PRIMARY KEY,
+  kind        text        NOT NULL,        -- instant | digest | test
+  subject     text        NOT NULL,
+  recipient   text,
+  event_count int         NOT NULL DEFAULT 1,
+  ok          boolean     NOT NULL,
+  error       text,
+  sent_at     timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX notification_log_idx ON notification_log (sent_at DESC);

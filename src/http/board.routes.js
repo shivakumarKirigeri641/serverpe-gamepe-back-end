@@ -8,7 +8,7 @@
 import { Router } from 'express';
 import { log } from '../utils/logger.js';
 import { config } from '../config/env.js';
-import { verifyBoardToken } from '../utils/code.js';
+import { verifyBoardToken, inviteUrl } from '../utils/code.js';
 import { boardPage } from './board-page.js';
 import { reportPage } from './report-page.js';
 import { playerReport } from '../services/gameover.service.js';
@@ -21,6 +21,7 @@ import { attemptClaim, getClaimState, getResults } from '../services/claim.servi
 import { subscribe, sendTo, broadcast } from '../services/live.service.js';
 import { taglineFor } from '../games/tambola/taglines.js';
 import { trackBoardRequest, recordEvent } from '../services/tracking.service.js';
+import { notify } from '../services/notification.service.js';
 
 /**
  * Express 4 does not catch rejections from async handlers - they escape as
@@ -104,6 +105,14 @@ export function boardRoutes() {
       broadcast(game.id, 'started', {
         countdownSeconds: config.game.startCountdownSeconds,
         drawInterval: game.draw_interval_seconds,
+      });
+      notify('game.started', {
+        title: `Game ${game.code} started`,
+        lines: [
+          `Room: ${game.code}`,
+          `Expected ${game.expected_players} players`,
+        ],
+        playerId: req.player.id, gameId: game.id,
       });
       await recordEvent({
         type: 'game.started', source: 'board', req,
@@ -247,6 +256,10 @@ async function snapshot(gameId, playerId) {
     prizes: claims.prizes,
     brand: config.brandName,
     businessNumber: config.whatsapp.businessNumber,
+    // The host shows this to friends; nobody else needs it, so it is only
+    // included for the host.
+    invite: game.host_player_id === playerId ? inviteUrl(game.code) : null,
+    hostName: lobby.players.find((p) => p.isHost)?.name ?? null,
   };
 
   if (game.status === 'finished') state.results = await getResults(gameId);

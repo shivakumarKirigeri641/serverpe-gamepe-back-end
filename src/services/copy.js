@@ -54,7 +54,7 @@ export const copy = {
     `• When you open your game board we also record your device and IP, to keep games fair.\n` +
     `• We never sell your data or message you outside a game.\n` +
     `• Play fair. Abuse or cheating means removal.\n\n` +
-    `Full policies: ${config.publicRoot}/policies\n\n` +
+    `Full policies: ${config.policiesUrl}\n\n` +
     `Tap below to accept and continue.`,
 
   consentDone: () => `Thank you! You're all set. 🎫`,

@@ -9,6 +9,7 @@
  */
 import { query } from '../db/pool.js';
 import { log } from '../utils/logger.js';
+import { notify } from './notification.service.js';
 
 /**
  * One feedback row per player per game, so a second tap corrects the rating
@@ -22,6 +23,11 @@ export async function saveRating({ playerId, gameId, rating }) {
        RETURNING id`,
     [playerId, gameId, rating],
   );
+  notify('feedback.given', {
+    title: `A player rated a game ${rating}/5`,
+    lines: [`Rating: ${rating} of 5`, gameId ? `Game id: ${gameId}` : 'Not about a specific game'],
+    playerId, gameId,
+  });
   log.info('rating saved', { playerId, gameId, rating });
   return rows[0]?.id ?? null;
 }
@@ -35,6 +41,11 @@ export async function saveComment({ playerId, gameId, comment }) {
        RETURNING id`,
     [playerId, gameId, comment],
   );
+  notify('feedback.given', {
+    title: 'A player left a comment',
+    lines: ['"' + comment.slice(0, 300) + '"'],
+    playerId, gameId,
+  });
   log.info('comment saved', { playerId, gameId, length: comment.length });
   return rows[0]?.id ?? null;
 }

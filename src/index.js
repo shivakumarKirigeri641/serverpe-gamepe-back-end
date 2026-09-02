@@ -11,6 +11,7 @@ import { closeAll } from './services/live.service.js';
 import { setOutboundRecorder } from './whatsapp/client.js';
 import { logOutbound } from './services/player.service.js';
 import { loadSettings } from './services/settings.service.js';
+import { ensureTriggers, sendDigest } from './services/notification.service.js';
 
 function banner() {
   const webhookUrl = `${config.publicRoot}${config.whatsapp.webhookPath}`;
@@ -57,6 +58,14 @@ async function main() {
   installCrashGuards();
   await assertConnection();
   await loadSettings();
+  await ensureTriggers();
+
+  // Batched alerts go out on their own clock. Unref'd so it never holds the
+  // process open on shutdown.
+  const digest = setInterval(() => {
+    sendDigest().catch((err) => log.error('digest failed', { message: err.message }));
+  }, config.alerts.digestMinutes * 60_000);
+  digest.unref();
 
   // Every outbound WhatsApp message lands in the conversation log with its
   // delivery outcome, so a silent failure is visible in the admin panel.

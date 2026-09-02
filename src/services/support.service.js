@@ -13,6 +13,7 @@ import { log } from '../utils/logger.js';
 import { sendMail } from './mailer.service.js';
 import { sendText } from '../whatsapp/client.js';
 import { recordEvent } from './tracking.service.js';
+import { notify } from './notification.service.js';
 
 /** The kinds of question the form offers. Stored as the key. */
 export const QUERY_TYPES = [
@@ -77,6 +78,16 @@ export async function createTicket({ playerId, name, waId, email, queryType, mes
     sendText(waId, ticketOpenedText(ticket)).catch(() => {});
   }
 
+  notify('support.raised', {
+    title: `Support ticket ${ticket.reference}`,
+    lines: [
+      `From: ${ticket.name} (+${ticket.wa_id ?? 'unknown'})`,
+      `About: ${labelFor(ticket.query_type)}`,
+      '',
+      ticket.message.slice(0, 500),
+    ],
+    playerId, gameId: null,
+  });
   log.info('support ticket opened', { reference: ticket.reference, type });
   return ticket;
 }
@@ -195,6 +206,16 @@ export async function appendPlayerMessage(ticket, { body, name }) {
     properties: { reference: ticket.reference },
   });
 
+  // Email the reply too. Without this an operator only learns about it by
+  // happening to have the Support page open - which means a waiting player
+  // gets silence until someone thinks to look.
+  emailReply(ticket, { body, name }).catch(() => {});
+
+  notify('support.replied', {
+    title: `${name} replied to ${ticket.reference}`,
+    lines: [`Status: ${ticket.status.replace(/_/g, ' ')}`, '', body.slice(0, 500)],
+    playerId: ticket.player_id,
+  });
   log.info('player replied to ticket', { reference: ticket.reference });
   return getTicket(ticket.id);
 }
@@ -327,4 +348,37 @@ export async function replyToTicket(id, { body, by }) {
 
   log.info('ticket replied', { reference: ticket.reference, delivered: Boolean(delivered) });
   return getTicket(id);
+}
+
+/**
+ * Emails a player's reply to the support inbox.
+ *
+ * Threaded on the reference in the subject, so a mail client groups it with
+ * the original ticket rather than scattering a conversation across the inbox.
+ */
+async function emailReply(ticket, { body, name }) {
+  const text = [
+    `${name} replied to ${ticket.reference}`,
+    '',
+    `WhatsApp: ${ticket.wa_id ? '+' + ticket.wa_id : 'not given'}`,
+    `Status:   ${ticket.status.replace(/_/g, ' ')}`,
+    `About:    ${labelFor(ticket.query_type)}`,
+    '',
+    '--- their reply ---',
+    body,
+    '',
+    'Reply from the admin panel and it goes straight to their WhatsApp.',
+  ].join('\n');
+
+  const result = await sendMail({
+    to: config.mail.supportInbox,
+    // Same subject line as the original, so it threads.
+    subject: `[${ticket.reference}] ${ticket.subject}`,
+    text,
+    replyTo: ticket.email || undefined,
+  });
+
+  if (!result.sent && result.error) {
+    log.warn('could not email ticket reply', { reference: ticket.reference, message: result.error });
+  }
 }

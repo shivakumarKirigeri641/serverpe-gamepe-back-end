@@ -21,6 +21,7 @@ import * as data from '../services/admin-data.service.js';
 import { POLICY_VERSION } from '../services/player.service.js';
 import * as settings from '../services/settings.service.js';
 import * as support from '../services/support.service.js';
+import * as alerts from '../services/notification.service.js';
 import { verifyMail, mailConfigured } from '../services/mailer.service.js';
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -454,28 +455,36 @@ export function adminRoutes() {
 
   router.get('/documents', wrap(async (_q, res) => ok(res, [])));
 
-  router.get('/notifications', wrap(async (_q, res) => ok(res, notBuilt({
-    status: {
-      enabled: false, configured: false,
-      digestMinutes: 0, from: null, to: null,
-    },
-    settings: [],
-    pending: 0,
-    // Every field the digest preview reads. Filled in completely rather than
-    // partially: a missing nested key here is an undefined-property crash that
-    // takes the whole page down, not a blank cell.
-    preview: {
-      players: { new: 0, active: 0 },
-      games: { created: 0, started: 0, completed: 0, abandoned: 0 },
-      messages: { inbound: 0, outbound: 0, failed: 0 },
-      feedback: { count: 0 },
-      trial: { signups: 0, played: 0, returning: 0, endsAt: settings.trialEndsAt() },
-      prizes: 0,
-      tickets: 0,
-      blocked: 0,
-    },
-    log: [],
-  }))));
+  // ─── operator alerts ─────────────────────────────────────────────────────
+
+  router.get('/notifications', wrap(async (_q, res) => ok(res, {
+    status: alerts.status(),
+    settings: await alerts.listSettings(),
+    pending: (await alerts.digestPreview()).pending,
+    preview: await alerts.digestPreview(),
+    log: await alerts.recentLog(20),
+  })));
+
+  /** Turn one alert to instant, batched, or off. Takes effect immediately. */
+  router.patch('/notifications/:key', wrap(async (req, res) => {
+    try {
+      const settings = await alerts.setMode(
+        String(req.params.key),
+        String(req.body?.mode ?? ''),
+        req.admin?.label ?? 'admin',
+      );
+      ok(res, settings);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  }));
+
+  /** Proves the SMTP credentials work without sending anything. */
+  router.post('/notifications/verify', wrap(async (_q, res) => ok(res, await verifyMail())));
+
+  /** Sends whatever is waiting, now, rather than at the next digest. */
+  router.post('/notifications/send', wrap(async (req, res) =>
+    ok(res, await alerts.sendDigest({ force: req.body?.force === true }))));
 
   // ─── maintenance window ──────────────────────────────────────────────────
 
