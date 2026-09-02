@@ -145,8 +145,20 @@ export const config = {
     host: optional('MAIL_HOST'),
     port: int('MAIL_PORT', 587, { min: 1, max: 65535 }),
     secure: optional('MAIL_SECURE', 'false') === 'true',
-    user: optional('NOREPLYMAIL') || optional('ADMINMAIL'),
-    password: optional('NOREPLYMAIL_PASSWORD') || optional('ADMINMAIL_PASSWORD'),
+    /**
+     * SMTP credentials, under any of the three names in the env files.
+     *
+     * MAIL_USER / MAIL_PASSWORD come first because they are the obvious names
+     * and they sit right next to MAIL_HOST and MAIL_PORT. They used to be read
+     * by nothing at all: an operator could fill them in, see MAIL_HOST set,
+     * and get no mail and no error - the quietest possible failure. They are
+     * honoured now, with the older NOREPLYMAIL and ADMINMAIL kept as fallbacks
+     * so existing deployments keep working untouched.
+     */
+    user: optional('MAIL_USER') || optional('NOREPLYMAIL') || optional('ADMINMAIL'),
+    password: optional('MAIL_PASSWORD')
+      || optional('NOREPLYMAIL_PASSWORD')
+      || optional('ADMINMAIL_PASSWORD'),
     // The bold name an inbox shows in its own column. The company, not the
     // product - the product leads the subject line instead.
     fromName: optional('MAIL_FROM_NAME', 'ServerPe App Solutions'),
