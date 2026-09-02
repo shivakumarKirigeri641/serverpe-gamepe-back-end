@@ -147,7 +147,9 @@ export const config = {
     secure: optional('MAIL_SECURE', 'false') === 'true',
     user: optional('NOREPLYMAIL') || optional('ADMINMAIL'),
     password: optional('NOREPLYMAIL_PASSWORD') || optional('ADMINMAIL_PASSWORD'),
-    fromName: optional('MAIL_FROM_NAME', 'MastiPe'),
+    // The bold name an inbox shows in its own column. The company, not the
+    // product - the product leads the subject line instead.
+    fromName: optional('MAIL_FROM_NAME', 'ServerPe App Solutions'),
     supportInbox: optional('SUPPORT_EMAIL', 'support@mastipe.in'),
   },
 
@@ -172,6 +174,8 @@ export const config = {
     enabled: optional('ADMIN_NOTIFICATIONS_ENABLED', 'true') === 'true',
     recipient: optional('ALERT_RECIPIENT') || optional('ADMINMAIL'),
     digestMinutes: int('ALERT_DIGEST_MINUTES', 10, { min: 1, max: 1440 }),
+    // Hour (IST) after which the daily summary is sent.
+    dailyHour: int('DAILY_SUMMARY_HOUR', 8, { min: 0, max: 23 }),
   },
 
   geo: {

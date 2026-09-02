@@ -12,6 +12,7 @@ import { setOutboundRecorder } from './whatsapp/client.js';
 import { logOutbound } from './services/player.service.js';
 import { loadSettings } from './services/settings.service.js';
 import { ensureTriggers, sendDigest } from './services/notification.service.js';
+import { startDailySummary } from './services/daily-summary.service.js';
 
 function banner() {
   const webhookUrl = `${config.publicRoot}${config.whatsapp.webhookPath}`;
@@ -66,6 +67,8 @@ async function main() {
     sendDigest().catch((err) => log.error('digest failed', { message: err.message }));
   }, config.alerts.digestMinutes * 60_000);
   digest.unref();
+
+  startDailySummary();
 
   // Every outbound WhatsApp message lands in the conversation log with its
   // delivery outcome, so a silent failure is visible in the admin panel.

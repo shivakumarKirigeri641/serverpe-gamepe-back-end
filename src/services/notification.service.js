@@ -30,7 +30,8 @@ export const TRIGGERS = [
     key: 'player.tapped',
     label: 'Someone tapped the WhatsApp button',
     description: 'A person messaged the bot — their first ever message, or a return after a while.',
-    subject: 'Someone tapped WhatsApp',
+    icon: '🔔',
+    subject: 'someone tapped "Start on WhatsApp"',
     // The highest-volume event by far. Instant would be unusable.
     mode: 'digest',
   },
@@ -38,28 +39,32 @@ export const TRIGGERS = [
     key: 'game.created',
     label: 'Host initialised a game room',
     description: 'A host chose a player count and created a room. They may not have started it yet.',
-    subject: 'Host initialised the game room',
+    icon: '🎯',
+    subject: 'a host initialised a game room',
     mode: 'digest',
   },
   {
     key: 'game.started',
     label: 'Game started',
     description: 'A host tapped Start and the numbers began.',
-    subject: 'Game started',
+    icon: '🎲',
+    subject: 'a game started',
     mode: 'digest',
   },
   {
     key: 'game.ended',
     label: 'Game ended',
     description: 'A game finished — Full House, all 90 numbers called, or abandoned.',
-    subject: 'Game ended',
+    icon: '🏁',
+    subject: 'a game ended',
     mode: 'digest',
   },
   {
     key: 'feedback.given',
     label: 'Feedback given',
     description: 'A player rated a game or left a comment.',
-    subject: 'Feedback given',
+    icon: '⭐',
+    subject: 'feedback was given',
     mode: 'digest',
   },
   {
@@ -67,7 +72,8 @@ export const TRIGGERS = [
     label: 'Support ticket raised',
     description: 'A player opened a support request. Someone is waiting for an answer.',
     // Rare, and a person is waiting. This is the one that should interrupt you.
-    subject: 'Support ticket raised',
+    icon: '🎫',
+    subject: 'a support ticket was raised',
     mode: 'instant',
   },
 
@@ -76,20 +82,23 @@ export const TRIGGERS = [
     key: 'support.replied',
     label: 'Player replied to a ticket',
     description: 'A player added to an open ticket on WhatsApp. Easy to miss without this.',
-    subject: 'Player replied to a support ticket',
+    icon: '💬',
+    subject: 'a player replied to a ticket',
     mode: 'instant',
   },
   {
     key: 'game.abandoned',
     label: 'Game abandoned',
     description: 'A game stopped because too few players were left. Real people had a bad experience.',
-    subject: 'A game was abandoned',
+    icon: '⚠️',
+    subject: 'a game was abandoned',
     mode: 'instant',
   },
   {
     key: 'whatsapp.failing',
     label: 'WhatsApp sending is failing',
     description: 'Outbound messages are being rejected — usually an expired token. The bot is effectively down.',
+    icon: '🚨',
     subject: 'WhatsApp sending is FAILING',
     mode: 'instant',
   },
@@ -97,14 +106,16 @@ export const TRIGGERS = [
     key: 'draws.stalled',
     label: 'A game has stalled',
     description: 'A running game has not drawn a number when it should have. Players are staring at a frozen board.',
-    subject: 'A game has stalled',
+    icon: '🚨',
+    subject: 'a game has stalled',
     mode: 'instant',
   },
   {
     key: 'daily.summary',
     label: 'Daily summary',
     description: 'Yesterday in one email: players, games, prizes, failures and open tickets.',
-    subject: 'Daily summary',
+    icon: '📊',
+    subject: 'daily summary',
     mode: 'digest',
   },
 ];
@@ -160,9 +171,106 @@ async function modeFor(key) {
   return rows[0]?.mode ?? byKey.get(key)?.mode ?? 'off';
 }
 
-/** The subject line, on one line — email subjects cannot contain a newline. */
+/**
+ * The subject line.
+ *
+ * The company name is deliberately NOT in here. An inbox already shows the
+ * sender in its own bold column — repeating "ServerPe App Solutions" would
+ * spend the only part of the line a person actually reads on something they
+ * can already see. Icon, product, then what happened:
+ *
+ *   ServerPe App Solutions   🔔 MastiPe — someone tapped "Start on WhatsApp"
+ *   └── sender column ───┘   └── subject ─────────────────────────────────┘
+ */
 function subjectFor(key) {
-  return `${config.business.legalName} — ${byKey.get(key)?.subject ?? key}`;
+  const t = byKey.get(key);
+  return `${t?.icon ?? '🔔'} ${config.brandName} — ${t?.subject ?? key}`;
+}
+
+/**
+ * Where the person was, as far as we honestly know.
+ *
+ * Appended to any alert that names a player, so an operator reading the email
+ * on a phone does not have to open the panel to answer the first question they
+ * always ask: who, and from where.
+ *
+ * The location is derived from the IP the BOARD was opened from, never from a
+ * browser permission prompt. Two consequences worth remembering before acting
+ * on it:
+ *
+ *   - A player who has only ever used WhatsApp has none of this. Meta's
+ *     servers relay the message, so there is no client address to read.
+ *   - On mobile data the address is the carrier's gateway, which can be a
+ *     different city — and, in India, occasionally a different state. It is a
+ *     hint for support and fraud triage, not evidence.
+ *
+ * "State" covers union territories too; the provider returns Delhi, Puducherry
+ * and Chandigarh in the same field as Karnataka, and so do we.
+ */
+async function originLines(playerId) {
+  if (!playerId) return [];
+  try {
+    const { rows } = await query(
+      `SELECT wa_id, display_name, last_ip, last_city, last_region, last_country,
+              last_device_type, last_os, last_browser, last_device_at
+         FROM players WHERE id = $1`,
+      [playerId],
+    );
+    const p = rows[0];
+    if (!p) return [];
+
+    const out = [];
+    const place = [p.last_city, p.last_region, p.last_country].filter(Boolean).join(', ');
+    if (place) out.push(`Location: ${place}   (approximate - from IP)`);
+    if (p.last_ip) out.push(`IP: ${p.last_ip}`);
+
+    const device = [p.last_device_type, p.last_os, p.last_browser].filter(Boolean).join(' · ');
+    if (device) out.push(`Device: ${device}`);
+
+    // No board visit means no address at all - say so, rather than leaving a
+    // silent gap that reads like a bug.
+    if (!p.last_ip && !place) out.push('Location: unknown (WhatsApp only - never opened a board)');
+
+    return out.length ? ['', ...out] : [];
+  } catch (err) {
+    log.debug('could not resolve origin', { playerId, message: err.message });
+    return [];
+  }
+}
+
+/**
+ * Where a whole table played from.
+ *
+ * Used for game-level alerts, where one player's city would be arbitrary. Same
+ * caveats as originLines: IP-derived, board visits only. Shown as a tally
+ * because that is the shape the question takes - "was this one household, or
+ * six people across three states?"
+ */
+async function gameOriginLines(gameId) {
+  if (!gameId) return [];
+  try {
+    const { rows } = await query(
+      `SELECT coalesce(city, 'unknown')  AS city,
+              coalesce(region, '')       AS region,
+              count(DISTINCT player_id)::int AS players
+         FROM board_sessions
+        WHERE game_id = $1
+        GROUP BY 1, 2
+        ORDER BY players DESC, city
+        LIMIT 6`,
+      [gameId],
+    );
+    if (!rows.length) return [];
+
+    const parts = rows.map((r) => {
+      const place = r.region && r.city !== 'unknown' ? `${r.city}, ${r.region}` : r.city;
+      return `${place} (${r.players})`;
+    });
+    return ['', `Played from: ${parts.join(' · ')}   (approximate - from IP)`];
+  } catch (err) {
+    log.debug('could not resolve game origin', { gameId, message: err.message });
+    return [];
+  }
 }
 
 /**
@@ -178,11 +286,12 @@ export async function notify(key, { title, lines = [], playerId = null, gameId =
     if (mode === 'off') return;
 
     const body = [
-      config.business.legalName,
-      '',
       title || byKey.get(key)?.subject || key,
       '',
       ...lines,
+      // A player-level alert gets that player's origin; a game-level one gets
+      // the spread across the table. Never both - it would just be noise.
+      ...(playerId ? await originLines(playerId) : await gameOriginLines(gameId)),
       '',
       `— ${config.brandName} · ${new Date().toLocaleString('en-IN', { timeZone: config.timezone })}`,
     ].join('\n');
@@ -230,20 +339,20 @@ export async function sendDigest({ force = false } = {}) {
     groups.get(r.trigger_key).push(r.body);
   }
 
-  const parts = [config.business.legalName, '', `Activity in the last ${config.alerts.digestMinutes} minutes`, ''];
+  const parts = [`Activity in the last ${config.alerts.digestMinutes} minutes`, ''];
   for (const [key, bodies] of groups) {
     const t = byKey.get(key);
     parts.push(`### ${t?.label ?? key} — ${bodies.length}`);
     // Only the middle of each queued body; the brand header and footer would
     // repeat pointlessly inside a digest.
     for (const b of bodies.slice(0, 20)) {
-      parts.push(...b.split('\n').slice(2, -2).filter(Boolean).map((l) => '  ' + l), '');
+      parts.push(...b.split('\n').slice(0, -2).filter(Boolean).map((l) => '  ' + l), '');
     }
     if (bodies.length > 20) parts.push(`  …and ${bodies.length - 20} more`, '');
   }
   parts.push(`— ${config.brandName} · ${new Date().toLocaleString('en-IN', { timeZone: config.timezone })}`);
 
-  const subject = `${config.business.legalName} — ${rows.length} update${rows.length === 1 ? '' : 's'}`;
+  const subject = `📬 ${config.brandName} — ${rows.length} update${rows.length === 1 ? '' : 's'}`;
   const result = await sendMail({ to: config.alerts.recipient, subject, text: parts.join('\n') });
 
   await query(

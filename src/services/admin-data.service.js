@@ -152,7 +152,20 @@ export async function live() {
              ORDER BY d.seq DESC LIMIT 1)                                        AS last_number,
            (SELECT d.drawn_at FROM draws d WHERE d.game_id=g.id
              ORDER BY d.seq DESC LIMIT 1)                                        AS last_draw_at,
-           g.created_at, g.started_at
+           g.created_at, g.started_at,
+           p.last_city AS host_city, p.last_region AS host_region,
+           p.last_country AS host_country,
+           -- The distinct places this room is being played from, most people
+           -- first. One string, because the table has one column for it.
+           (SELECT string_agg(x.place, ' · ' ORDER BY x.players DESC, x.place)
+              FROM (
+                SELECT coalesce(nullif(b.city, ''), 'unknown')
+                       || coalesce(', ' || nullif(b.region, ''), '')  AS place,
+                       count(DISTINCT b.player_id)                    AS players
+                  FROM board_sessions b
+                 WHERE b.game_id = g.id
+                 GROUP BY 1
+              ) x)                                                              AS places
       FROM games g JOIN players p ON p.id = g.host_player_id
      WHERE g.status IN ('running','lobby')
      ORDER BY g.status, g.created_at DESC
@@ -185,10 +198,28 @@ export async function livePlayers() {
            (SELECT count(*) FROM draw_answers a
              WHERE a.game_id=g.id AND a.player_id=p.id AND a.answer<>'no_response') AS answered,
            (SELECT max(a.answered_at) FROM draw_answers a
-             WHERE a.game_id=g.id AND a.player_id=p.id)                             AS last_answer_at
+             WHERE a.game_id=g.id AND a.player_id=p.id)                             AS last_answer_at,
+           -- Prefer where they are sitting for THIS game over wherever they
+           -- were last seen: a player who travelled since their last game
+           -- should show the city they are playing from now, not the old one.
+           coalesce(s.city,    p.last_city)                                         AS city,
+           coalesce(s.region,  p.last_region)                                       AS region,
+           coalesce(s.country, p.last_country)                                      AS country,
+           coalesce(s.ip,      p.last_ip)                                           AS ip,
+           coalesce(s.device_type, p.last_device_type)                              AS device_type,
+           coalesce(s.os,      p.last_os)                                           AS os,
+           coalesce(s.browser, p.last_browser)                                      AS browser,
+           (s.id IS NOT NULL)                                                       AS board_open
       FROM game_players gp
       JOIN games g   ON g.id = gp.game_id
       JOIN players p ON p.id = gp.player_id
+      LEFT JOIN LATERAL (
+        SELECT b.id, b.city, b.region, b.country, b.ip, b.device_type, b.os, b.browser
+          FROM board_sessions b
+         WHERE b.game_id = g.id AND b.player_id = p.id
+         ORDER BY b.last_seen_at DESC
+         LIMIT 1
+      ) s ON true
      WHERE g.status IN ('running','lobby') AND gp.left_at IS NULL
      ORDER BY g.code, gp.joined_at
   `);

@@ -13,6 +13,7 @@ import { log } from '../utils/logger.js';
 import { query } from '../db/pool.js';
 import { requestInfo } from '../utils/request-info.js';
 import { geoStatus } from '../services/geo.service.js';
+import { geographyReport } from '../services/geography.service.js';
 import { listenerCount } from '../services/live.service.js';
 import {
   login, revokeSession, listSessions, requireAdmin, purgeExpired,
@@ -22,6 +23,7 @@ import { POLICY_VERSION } from '../services/player.service.js';
 import * as settings from '../services/settings.service.js';
 import * as support from '../services/support.service.js';
 import * as alerts from '../services/notification.service.js';
+import { buildDailySummary, sendDailySummary } from '../services/daily-summary.service.js';
 import { verifyMail, mailConfigured } from '../services/mailer.service.js';
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -237,6 +239,20 @@ export function adminRoutes() {
 
   router.get('/messages/delivery', wrap(async (req, res) =>
     ok(res, await data.messageDelivery({ days: int(req.query.days, 30) }))));
+
+  /**
+   * Where players are and which way each place is moving.
+   *
+   * ?period=day|week|month decides both the bar and what it is compared with:
+   * a week is measured against the week before it, never against a rolling
+   * window, so the weekend does not read as a crash every Monday.
+   */
+  router.get('/geography', wrap(async (req, res) => {
+    const period = ['day', 'week', 'month'].includes(String(req.query.period))
+      ? String(req.query.period)
+      : 'week';
+    ok(res, await geographyReport({ period, limit: int(req.query.limit, 12) }));
+  }));
 
   router.get('/legal/consents/stats', wrap(async (_q, res) => ok(res, await data.consentStats())));
 
@@ -483,6 +499,13 @@ export function adminRoutes() {
   router.post('/notifications/verify', wrap(async (_q, res) => ok(res, await verifyMail())));
 
   /** Sends whatever is waiting, now, rather than at the next digest. */
+  /** Read the summary without emailing it. */
+  router.get('/notifications/daily', wrap(async (_q, res) => ok(res, await buildDailySummary())));
+
+  /** Send it now, regardless of the hour or whether today's already went. */
+  router.post('/notifications/daily', wrap(async (_q, res) =>
+    ok(res, await sendDailySummary({ force: true }))));
+
   router.post('/notifications/send', wrap(async (req, res) =>
     ok(res, await alerts.sendDigest({ force: req.body?.force === true }))));
 
