@@ -136,7 +136,8 @@ export async function live() {
         WHERE direction='in' AND created_at > now() - interval '1 hour')        AS said_hi_1h,
       (SELECT count(*) FROM messages
         WHERE direction='out' AND created_at > now() - interval '1 hour')       AS sent_1h,
-      0                                                                          AS tickets_open
+      (SELECT count(*)::int FROM support_tickets
+        WHERE status IN ('open','in_progress'))                                  AS tickets_open
   `);
 
   const games = await query(`

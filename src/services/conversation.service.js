@@ -9,10 +9,13 @@
  * loses nothing.
  */
 import { config } from '../config/env.js';
+import { query } from '../db/pool.js';
 import { log } from '../utils/logger.js';
 import { boardUrl, inviteUrl, looksLikeRoomCode, normaliseRoomCode } from '../utils/code.js';
-import { sendText, sendButtons, sendCtaUrl } from '../whatsapp/client.js';
-import { copy, BUTTONS, menuButtons, consentButtons, planButtons } from './copy.js';
+import { sendText, sendButtons, sendCtaUrl, sendList } from '../whatsapp/client.js';
+import {
+  copy, BUTTONS, OPTIONS, menuButtons, consentButtons, planButtons, optionsList,
+} from './copy.js';
 import {
   findOrCreatePlayer, getState, setState, hasConsented, recordConsent,
   logMessage, displayNameFor, getPlayerById,
@@ -26,6 +29,10 @@ import { maintenance } from './settings.service.js';
 import { broadcast } from './live.service.js';
 import { FEEDBACK_BUTTONS, reportUrl, announceGameAbandoned } from './gameover.service.js';
 import { saveRating, saveComment } from './feedback.service.js';
+import {
+  getTicketByReference, openTicketForPlayer, appendPlayerMessage,
+} from './support.service.js';
+import { feedbackUrl, supportUrl } from '../utils/code.js';
 
 export { STATES } from './conversation-states.js';
 
@@ -33,6 +40,9 @@ const GREETINGS = /^(hi|hii+|hey|hello|start|menu|namaste|namaskar)\b/i;
 const JOIN_COMMAND = /^join\s+([a-z0-9]{4,10})$/i;
 /** Words a player actually uses when they want out. */
 const LEAVE_COMMAND = /^(leave|quit|exit|stop)\b/i;
+/** "status MP-AB12CD" - checking a ticket without opening a browser. */
+const STATUS_COMMAND = /^status\s+([A-Za-z0-9-]{3,20})$/i;
+const SUPPORT_COMMAND = /^(support|help)\b/i;
 
 /**
  * Entry point for one inbound message. Never throws: a failure here would
@@ -81,6 +91,11 @@ async function route(player, event) {
   // players arrive, and they should never have to navigate a menu first.
   const joinMatch = event.type === 'text' && event.text.match(JOIN_COMMAND);
   if (joinMatch) return handleJoinRequest(player, joinMatch[1]);
+
+  const statusMatch = event.type === 'text' && event.text.match(STATUS_COMMAND);
+  if (statusMatch) return handleTicketStatus(player, statusMatch[1]);
+
+  if (event.type === 'text' && SUPPORT_COMMAND.test(event.text)) return handleSupportLink(player);
 
   if (event.type === 'text' && LEAVE_COMMAND.test(event.text)) return handleLeave(player);
 
@@ -142,7 +157,13 @@ async function handleButton(player, state, replyId) {
       return sendText(player.wa_id, copy.askJoinCode());
 
     case BUTTONS.MENU_OPTIONS:
-      return sendText(player.wa_id, copy.optionsComingSoon());
+      return sendList(player.wa_id, copy.optionsMenu(), optionsList());
+
+    case OPTIONS.REPORT:   return handleRecentReport(player);
+    case OPTIONS.DEMO:     return handleDemo(player);
+    case OPTIONS.SPONSOR:  return sendText(player.wa_id, copy.sponsorPlaceholder());
+    case OPTIONS.FEEDBACK: return handleFeedbackLink(player);
+    case OPTIONS.SUPPORT:  return handleSupportLink(player);
 
     case BUTTONS.PLAN_FREE_TRIAL:
       return createRoom(player, state);
@@ -292,6 +313,61 @@ async function handleLeave(player) {
   }
 }
 
+// --- Options ---------------------------------------------------------------
+
+/** Their most recent FINISHED game. A game still running has no report yet. */
+async function handleRecentReport(player) {
+  const { rows } = await query(
+    `SELECT g.id, g.code, g.ended_at
+       FROM game_players gp JOIN games g ON g.id = gp.game_id
+      WHERE gp.player_id = $1 AND g.status IN ('finished','abandoned')
+      ORDER BY g.ended_at DESC NULLS LAST LIMIT 1`,
+    [player.id],
+  );
+  if (!rows[0]) return sendText(player.wa_id, copy.noRecentGame());
+
+  const g = rows[0];
+  const when = g.ended_at
+    ? new Date(g.ended_at).toLocaleString('en-IN', {
+        day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
+        timeZone: config.timezone,
+      })
+    : 'recently';
+
+  return sendCtaUrl(player.wa_id, copy.recentReport(g.code, when, reportUrl(g.id, player.id)), {
+    displayText: 'Open report',
+    url: reportUrl(g.id, player.id),
+  });
+}
+
+async function handleDemo(player) {
+  return sendCtaUrl(player.wa_id, copy.demoIntro(), {
+    displayText: 'How to play',
+    url: `${config.publicRoot}/public/demo`,
+  });
+}
+
+async function handleFeedbackLink(player) {
+  return sendCtaUrl(player.wa_id, copy.feedbackIntro(), {
+    displayText: 'Give feedback',
+    url: feedbackUrl(player.id),
+  });
+}
+
+async function handleSupportLink(player) {
+  return sendCtaUrl(player.wa_id, copy.supportIntro(), {
+    displayText: 'Contact support',
+    url: supportUrl(player.id),
+  });
+}
+
+/** "status MP-XXXXXX" - checked without opening a browser. */
+async function handleTicketStatus(player, reference) {
+  const found = await getTicketByReference(reference);
+  if (!found) return sendText(player.wa_id, copy.noSuchTicket(reference));
+  return sendText(player.wa_id, copy.ticketStatus(found.ticket, found.messages));
+}
+
 // --- Feedback --------------------------------------------------------------
 
 /**
@@ -346,6 +422,31 @@ async function handleText(player, state, text) {
       return sendButtons(player.wa_id, copy.consent(), consentButtons());
 
     default:
-      return sendText(player.wa_id, copy.unknown());
+      return handleLooseText(player, text);
   }
+}
+
+/**
+ * Text that matched nothing else.
+ *
+ * Before giving up, check whether this player has a support ticket still in
+ * play — if they do, this is almost certainly a reply to it. Telling someone
+ * "I didn't understand that" when they are answering a question we asked is
+ * the rudest thing the bot could do.
+ */
+async function handleLooseText(player, text) {
+  const body = text.trim();
+
+  if (body.length >= 3) {
+    const ticket = await openTicketForPlayer(player.id);
+    if (ticket) {
+      await appendPlayerMessage(ticket, {
+        body: body.slice(0, 2000),
+        name: displayNameFor(player),
+      });
+      return sendText(player.wa_id, copy.replyAdded(ticket.reference));
+    }
+  }
+
+  return sendText(player.wa_id, copy.unknown());
 }

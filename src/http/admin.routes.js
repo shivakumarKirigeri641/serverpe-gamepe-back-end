@@ -20,6 +20,8 @@ import {
 import * as data from '../services/admin-data.service.js';
 import { POLICY_VERSION } from '../services/player.service.js';
 import * as settings from '../services/settings.service.js';
+import * as support from '../services/support.service.js';
+import { verifyMail, mailConfigured } from '../services/mailer.service.js';
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const ok = (res, payload) => res.json({ data: payload });
@@ -407,10 +409,48 @@ export function adminRoutes() {
   router.get('/wallets/:id', idParam, wrap(async (_q, res) =>
     ok(res, notBuilt({ wallet: null, transactions: [] }))));
 
-  router.get('/support/tickets', wrap(async (_q, res) => ok(res, notBuilt({
-    items: [],
-    stats: { open: 0, in_progress: 0, resolved: 0, closed: 0, total: 0 },
-  }))));
+  // ─── support ─────────────────────────────────────────────────────────────
+
+  router.get('/support/tickets', wrap(async (req, res) =>
+    ok(res, await support.listTickets({
+      limit: int(req.query.limit, 100),
+      status: req.query.status || null,
+    }))));
+
+  router.get('/support/tickets/:id', idParam, wrap(async (req, res) => {
+    const found = await support.getTicket(req.id);
+    if (!found) return res.status(404).json({ error: 'No such ticket' });
+    ok(res, found);
+  }));
+
+  /** Status or priority. A status change the player cares about is sent to them. */
+  router.patch('/support/tickets/:id', idParam, wrap(async (req, res) => {
+    try {
+      const updated = await support.updateTicket(req.id, {
+        status: req.body?.status,
+        priority: req.body?.priority,
+      }, req.admin?.label ?? 'admin');
+      if (!updated) return res.status(404).json({ error: 'No such ticket' });
+      ok(res, updated);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  }));
+
+  /** An operator's reply. Recorded here, delivered on WhatsApp. */
+  router.post('/support/tickets/:id/messages', idParam, wrap(async (req, res) => {
+    const body = String(req.body?.body ?? '').trim();
+    if (!body) return res.status(400).json({ error: 'A reply cannot be empty' });
+
+    const updated = await support.replyToTicket(req.id, {
+      body: body.slice(0, 2000),
+      by: req.admin?.label ?? 'admin',
+    });
+    if (!updated) return res.status(404).json({ error: 'No such ticket' });
+    ok(res, updated);
+  }));
+
+  router.get('/support/mail-check', wrap(async (_q, res) => ok(res, await verifyMail())));
 
   router.get('/documents', wrap(async (_q, res) => ok(res, [])));
 

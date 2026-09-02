@@ -12,6 +12,7 @@ import { policiesPage } from './policies-page.js';
 import { boardRoutes } from './board.routes.js';
 import { adminRoutes } from './admin.routes.js';
 import { publicRoutes } from './public.routes.js';
+import { formsRoutes } from './forms.routes.js';
 
 export function createApp() {
   const app = express();
@@ -83,6 +84,7 @@ export function createApp() {
   api.use(config.admin.basePath, adminRoutes());
 
   api.use(publicRoutes());
+  api.use(formsRoutes());
 
   api.use(boardRoutes());
   api.use(webhookRoutes());

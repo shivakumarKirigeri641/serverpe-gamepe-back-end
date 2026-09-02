@@ -140,6 +140,19 @@ export const config = {
     partnerUrl: optional('QUIZPE_API_URL', ''),
   },
 
+  mail: {
+    host: optional('MAIL_HOST'),
+    port: int('MAIL_PORT', 587, { min: 1, max: 65535 }),
+    secure: optional('MAIL_SECURE', 'false') === 'true',
+    user: optional('NOREPLYMAIL') || optional('ADMINMAIL'),
+    password: optional('NOREPLYMAIL_PASSWORD') || optional('ADMINMAIL_PASSWORD'),
+    fromName: optional('MAIL_FROM_NAME', 'MastiPe'),
+    supportInbox: optional('SUPPORT_EMAIL', 'support@mastipe.in'),
+  },
+
+  /** The marketing site, for links the bot hands out. */
+  siteBaseUrl: optional('SITE_BASE_URL', '').replace(/\/+$/, ''),
+
   geo: {
     // Server-side IP lookup only - players are never asked for permission.
     enabled: optional('GEO_LOOKUP_ENABLED', 'false') === 'true',

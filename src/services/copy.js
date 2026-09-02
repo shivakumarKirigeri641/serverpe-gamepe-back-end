@@ -107,9 +107,61 @@ export const copy = {
     `You're already in game *${code}*.\n\n` +
     `Finish or leave that one before starting another. Open it below.`,
 
-  optionsComingSoon: () =>
-    `More options are on the way. 🚧\n\n` +
-    `For now you can *Play Tambola* or *Join a game*. Type *hi* to go back.`,
+  optionsMenu: () => `What would you like?`,
+
+  /** Nothing to report yet - said without making them feel they missed a step. */
+  noRecentGame: () =>
+    `You haven't finished a game yet, so there's no report to show.\n\n` +
+    `Play one and we'll send you a full report the moment it ends — your ticket, ` +
+    `every number called, and how you did.\n\n` +
+    `Type *hi* to start.`,
+
+  recentReport: (code, when, url) =>
+    `Your most recent game: *${code}*\n_${when}_\n\n` +
+    `Ticket, every number called, your taps and how accurate you were:\n${url}\n\n` +
+    `Open it and tap *Save as PDF* to keep a copy.`,
+
+  demoIntro: () =>
+    `Here's how ${brand()} works — a real ticket, with numbers being called. ` +
+    `Takes about a minute.`,
+
+  /** Not on sale yet. Said plainly rather than dressed up as a teaser. */
+  sponsorPlaceholder: () =>
+    `*Sponsor a parent* 💛\n\n` +
+    `Soon you'll be able to sponsor a parent's daily revision quiz on ` +
+    `*${config.sponsorship.partner}* for ₹${Math.round(config.sponsorship.pricePaise / 100)} — ` +
+    `and get ${config.sponsorship.complimentaryHours} hours of unlimited ${brand()} games, complimentary.\n\n` +
+    `The clock would start when your first game does, not when you pay.\n\n` +
+    `It isn't live yet. Everything is free while the trial runs, so there's ` +
+    `nothing to buy today.\n\n` +
+    `Type *hi* to play.`,
+
+  feedbackIntro: () =>
+    `We'd love to know what you think. It takes about twenty seconds.`,
+
+  supportIntro: () =>
+    `Happy to help. Tell us what's up and we'll reply right here on WhatsApp.`,
+
+  ticketStatus: (ticket, messages) => {
+    const labels = {
+      open: 'Open — we have it and will look shortly',
+      in_progress: 'Being looked at now 🔎',
+      waiting_on_player: 'Waiting for your reply',
+      resolved: 'Resolved ✅',
+      closed: 'Closed',
+    };
+    const last = messages.filter((m) => m.author !== 'player').slice(-1)[0];
+    return (
+      `*${ticket.reference}*\n${ticket.subject}\n\n` +
+      `Status: *${labels[ticket.status] ?? ticket.status}*\n` +
+      (last ? `\nLast from us:\n_${last.body.split('\n')[0].slice(0, 200)}_\n` : '') +
+      `\nReply here any time to add to it.`
+    );
+  },
+
+  noSuchTicket: (reference) =>
+    `We can't find a ticket with reference *${reference}*.\n\n` +
+    `Check the code, or send *support* to raise a new one.`,
 
   unknown: () =>
     `Sorry, I didn't understand that.\n\n` +
@@ -191,3 +243,39 @@ export const consentButtons = () => [
 export const planButtons = () => [
   { id: BUTTONS.PLAN_FREE_TRIAL, title: 'Free trial' },
 ];
+
+/**
+ * The Options menu.
+ *
+ * A LIST, not buttons: WhatsApp caps reply buttons at three and there are five
+ * choices here. A list also gives each row a description, which is where the
+ * "what does this actually do" explanation belongs.
+ */
+export const OPTIONS = {
+  REPORT: 'opt_report',
+  DEMO: 'opt_demo',
+  SPONSOR: 'opt_sponsor',
+  FEEDBACK: 'opt_feedback',
+  SUPPORT: 'opt_support',
+};
+
+export const optionsList = () => ({
+  buttonText: 'View options',
+  header: config.brandName,
+  footer: 'Tap an option to continue',
+  sections: [{
+    title: 'Options',
+    rows: [
+      { id: OPTIONS.REPORT, title: 'Recently played', description: 'Your last game report, ready to download' },
+      { id: OPTIONS.DEMO, title: 'How to play', description: 'A short walkthrough with a real ticket' },
+      { id: OPTIONS.SPONSOR, title: 'Sponsor a parent', description: `Support a parent on ${config.sponsorship.partner}` },
+      { id: OPTIONS.FEEDBACK, title: 'Give feedback', description: 'Rate a game and tell us what you think' },
+      { id: OPTIONS.SUPPORT, title: 'Support', description: 'Raise a question and get a reference' },
+    ],
+  }],
+});
+
+/** Appended to `copy` after definition to keep the main object readable. */
+copy.replyAdded = (reference) =>
+  `Added to your support request *${reference}*. 📝\n\n` +
+  `We will get back to you here. Send *status ${reference}* any time to check on it.`;

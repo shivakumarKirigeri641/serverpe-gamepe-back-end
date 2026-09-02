@@ -49,7 +49,10 @@ export function verifyBoardToken(token) {
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
 
   const ids = { gameId: Number(gameId), playerId: Number(playerId) };
-  if (!Number.isInteger(ids.gameId) || !Number.isInteger(ids.playerId)) return null;
+  // gameId 0 is legitimate: feedback and support links are about a player, not
+  // a game. playerId always has to be a real row.
+  if (!Number.isInteger(ids.gameId) || ids.gameId < 0) return null;
+  if (!Number.isInteger(ids.playerId) || ids.playerId <= 0) return null;
   return ids;
 }
 
@@ -68,4 +71,19 @@ export function boardUrl(gameId, playerId) {
  */
 export function inviteUrl(code) {
   return `https://wa.me/${config.whatsapp.businessNumber}?text=${encodeURIComponent(`JOIN ${code}`)}`;
+}
+
+/**
+ * Signed links to the player-facing forms.
+ *
+ * Same signing scheme as board links, with gameId 0 standing for "not about a
+ * game" — so a feedback or support URL cannot be edited to impersonate someone
+ * else, exactly like a board link.
+ */
+export function feedbackUrl(playerId, gameId = 0) {
+  return `${config.publicRoot}/feedback/${signBoardToken(gameId, playerId)}`;
+}
+
+export function supportUrl(playerId, gameId = 0) {
+  return `${config.publicRoot}/support/${signBoardToken(gameId, playerId)}`;
 }

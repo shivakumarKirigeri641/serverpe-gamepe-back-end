@@ -8,6 +8,8 @@
 -- Switch to additive migrations once there are real players to protect.
 -- ===========================================================================
 
+DROP TABLE IF EXISTS support_ticket_messages CASCADE;
+DROP TABLE IF EXISTS support_tickets    CASCADE;
 DROP TABLE IF EXISTS app_settings       CASCADE;
 DROP TABLE IF EXISTS admin_login_attempts CASCADE;
 DROP TABLE IF EXISTS admin_sessions     CASCADE;
@@ -392,3 +394,57 @@ CREATE TABLE app_settings (
   updated_at timestamptz NOT NULL DEFAULT now(),
   updated_by text
 );
+
+
+-- --- Support ---------------------------------------------------------------
+
+/*
+ * One ticket per question a player asks through the support form.
+ *
+ * "reference" is the short code the player is given on WhatsApp and quotes
+ * back at us. It is generated, not derived from the id, so it carries no
+ * information about how many tickets exist.
+ */
+CREATE TABLE support_tickets (
+  id           bigserial   PRIMARY KEY,
+  reference    text        NOT NULL UNIQUE,
+  player_id    bigint      REFERENCES players(id) ON DELETE SET NULL,
+  game_id      bigint      REFERENCES games(id)   ON DELETE SET NULL,
+
+  name         text        NOT NULL,
+  wa_id        text,
+  email        text,
+  query_type   text        NOT NULL,
+  subject      text        NOT NULL,
+  message      text        NOT NULL,
+
+  status       text        NOT NULL DEFAULT 'open'
+                 CHECK (status IN ('open','in_progress','waiting_on_player','resolved','closed')),
+  priority     text        NOT NULL DEFAULT 'normal'
+                 CHECK (priority IN ('low','normal','high','urgent')),
+
+  -- Whether the emailed copy actually left the building. A support request
+  -- that silently failed to send is the worst possible failure here.
+  emailed_at   timestamptz,
+  email_error  text,
+
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX support_tickets_status_idx ON support_tickets (status, created_at DESC);
+CREATE INDEX support_tickets_player_idx ON support_tickets (player_id, created_at DESC);
+
+/*
+ * The conversation on a ticket. An operator's reply is also pushed to the
+ * player over WhatsApp, so this doubles as the record of what was sent.
+ */
+CREATE TABLE support_ticket_messages (
+  id           bigserial   PRIMARY KEY,
+  ticket_id    bigint      NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
+  author       text        NOT NULL CHECK (author IN ('player','admin','system')),
+  author_name  text,
+  body         text        NOT NULL,
+  delivered_at timestamptz,
+  created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX support_ticket_messages_idx ON support_ticket_messages (ticket_id, created_at);
