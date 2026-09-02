@@ -197,3 +197,36 @@ function clamp(text, max) {
 function oneLine(text) {
   return clamp(String(text ?? '').replace(/\s+/g, ' '), 120);
 }
+
+/**
+ * Sends an approved message template.
+ *
+ * This is the ONLY way to reach a player who has not messaged us in the last
+ * 24 hours — a plain text send to them is silently rejected by Meta. Used for
+ * the "we are back online" announcement after maintenance, where by definition
+ * nobody has been in touch for hours.
+ */
+export function sendTemplate(to, name, params = [], language = 'en') {
+  return send(
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name,
+        language: { code: language },
+        // A body with no variables must omit `components` entirely; Meta
+        // rejects an empty parameters array.
+        ...(params.length
+          ? {
+              components: [{
+                type: 'body',
+                parameters: params.map((text) => ({ type: 'text', text: String(text) })),
+              }],
+            }
+          : {}),
+      },
+    },
+    `template ${name}(${params.join(', ')})`,
+  );
+}

@@ -126,6 +126,20 @@ export const config = {
     },
   },
 
+  /**
+   * The sponsorship plan: pay for a parent's QuizPe subscription, get a window
+   * of complimentary games. Defined but NOT enabled - the shape and the price
+   * are settled so the copy and the schema are ready, and nothing charges
+   * anyone until sponsorshipEnabled flips.
+   */
+  sponsorship: {
+    enabled: optional('SPONSORSHIPS_ENABLED', 'false') === 'true',
+    pricePaise: int('SPONSORSHIP_PRICE_PAISE', 9900, { min: 100, max: 10000000 }),
+    complimentaryHours: int('SPONSORSHIP_COMPLIMENTARY_HOURS', 24, { min: 1, max: 720 }),
+    partner: optional('SPONSORSHIP_PARTNER', 'QuizPe'),
+    partnerUrl: optional('QUIZPE_API_URL', ''),
+  },
+
   geo: {
     // Server-side IP lookup only - players are never asked for permission.
     enabled: optional('GEO_LOOKUP_ENABLED', 'false') === 'true',
@@ -140,7 +154,7 @@ export const config = {
     startCountdownSeconds: int('START_COUNTDOWN_SECONDS', 5, { min: 3, max: 30 }),
     earlyAdvanceDelayMs: int('EARLY_ADVANCE_DELAY_MS', 300, { min: 0, max: 10000 }),
     minPlayers: int('MIN_PLAYERS_TO_START', 2, { min: 2, max: 50 }),
-    maxPlayers: int('MAX_PLAYERS_PER_GAME', 50, { min: 2, max: 500 }),
+    maxPlayers: int('MAX_PLAYERS_PER_GAME', 50, { min: 2, max: 2000 }),
     lobbyExpiryMinutes: int('LOBBY_EXPIRY_MINUTES', 60, { min: 1, max: 1440 }),
   },
 };

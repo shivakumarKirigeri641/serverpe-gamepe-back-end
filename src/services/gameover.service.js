@@ -103,6 +103,72 @@ export async function announceGameOver(gameId) {
   return { sent };
 }
 
+/**
+ * Tells the remaining players a game was abandoned.
+ *
+ * Deliberately NOT the celebration path: nobody won, so there is no trophy, no
+ * confetti and no "congratulations". It says what happened, that it was not
+ * their fault, and what to do next — and it still links the report, because
+ * the numbers that were called are a matter of record either way.
+ */
+export async function announceGameAbandoned(gameId, { leaverName = null } = {}) {
+  const already = await query(
+    `SELECT 1 FROM analytics_events
+      WHERE game_id = $1 AND event_type = 'game.abandoned_sent' LIMIT 1`,
+    [gameId],
+  );
+  if (already.rows.length) return { sent: 0, skipped: true };
+
+  const { rows: games } = await query('SELECT * FROM games WHERE id = $1', [gameId]);
+  const game = games[0];
+  if (!game) return { sent: 0 };
+
+  const { rows: players } = await query(
+    `SELECT p.id, p.wa_id, p.display_name
+       FROM game_players gp JOIN players p ON p.id = gp.player_id
+      WHERE gp.game_id = $1 AND gp.left_at IS NULL`,
+    [gameId],
+  );
+
+  await recordEvent({
+    type: 'game.abandoned_sent', source: 'system', gameId,
+    properties: { remaining: players.length, leaver: leaverName },
+  });
+
+  let sent = 0;
+  for (const player of players) {
+    try {
+      await sendText(player.wa_id, abandonedText({ game, leaverName }));
+      await sendText(player.wa_id, copy.gameReport(game.code, reportUrl(game.id, player.id)));
+      await setState(player.id, STATES.MENU, {});
+      sent++;
+    } catch (err) {
+      log.warn('could not send abandon notice', { playerId: player.id, message: err.message });
+    }
+  }
+
+  log.info('game abandoned, players told', { gameId, sent });
+  return { sent };
+}
+
+function abandonedText({ game, leaverName }) {
+  return [
+    `*Game ${game.code} has ended early*`,
+    '',
+    leaverName
+      ? `${leaverName} left the game, which left too few players to carry on.`
+      : `Too few players were left to carry on.`,
+    '',
+    `Tambola needs at least two players, so we have stopped the game rather ` +
+      `than keep calling numbers. No prizes have been awarded.`,
+    '',
+    `${game.cursor} number${game.cursor === 1 ? '' : 's'} were called before it ended — ` +
+      `the full record is in the link below.`,
+    '',
+    `Thank you for playing. Message *hi* whenever you would like another game.`,
+  ].join('\n');
+}
+
 function summaryText({ game, results, mine, won, name }) {
   const lines = [];
   lines.push(`*Game ${game.code} - that's a wrap!* 🎉`, '');

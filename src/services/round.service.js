@@ -12,7 +12,7 @@ import { log } from '../utils/logger.js';
 import { config } from '../config/env.js';
 import { taglineFor } from '../games/tambola/taglines.js';
 import { isGameOver } from '../games/tambola/claims.js';
-import { broadcast } from './live.service.js';
+import { broadcast, broadcastCoalesced, cancelCoalesced } from './live.service.js';
 import { announceGameOver } from './gameover.service.js';
 
 /**
@@ -117,6 +117,7 @@ export async function performDraw(gameId, expectedCursor = null) {
 }
 
 async function endGame(client, gameId, reason) {
+  cancelCoalesced(gameId);
   await client.query(
     `UPDATE games
         SET status = 'finished', ended_at = now(), ended_reason = $2, next_draw_at = NULL
@@ -137,20 +138,20 @@ export async function recordAnswer({ gameId, playerId, seq, answer }) {
     return { ok: false, reason: 'answer must be yes or no' };
   }
 
-  const { rows: drawRows } = await query(
-    'SELECT value FROM draws WHERE game_id = $1 AND seq = $2',
-    [gameId, seq],
+  // One round trip instead of two. Under load the number of queries per tap
+  // is what decides whether the pool keeps up.
+  const { rows: ctx } = await query(
+    `SELECT d.value, e.ticket
+       FROM draws d
+       LEFT JOIN entries e ON e.game_id = d.game_id AND e.player_id = $3
+      WHERE d.game_id = $1 AND d.seq = $2`,
+    [gameId, seq, playerId],
   );
-  if (drawRows.length === 0) return { ok: false, reason: 'that number has not been called' };
-  const value = drawRows[0].value;
+  if (ctx.length === 0) return { ok: false, reason: 'that number has not been called' };
+  if (!ctx[0].ticket) return { ok: false, reason: 'you are not in this game' };
 
-  const { rows: entryRows } = await query(
-    'SELECT ticket FROM entries WHERE game_id = $1 AND player_id = $2',
-    [gameId, playerId],
-  );
-  if (entryRows.length === 0) return { ok: false, reason: 'you are not in this game' };
-
-  const onTicket = entryRows[0].ticket.numbers.includes(value);
+  const value = ctx[0].value;
+  const onTicket = ctx[0].ticket.numbers.includes(value);
   const wasCorrect = (answer === 'yes') === onTicket;
 
   // First answer wins; a double tap does not overwrite the original.
@@ -178,8 +179,9 @@ export async function recordAnswer({ gameId, playerId, seq, answer }) {
   const progress = await answerProgress(gameId, seq);
   await maybeAdvanceEarly(gameId, seq, progress);
 
-  // Everyone's board updates its "waiting for N others" line.
-  broadcast(gameId, 'answers', { seq, ...progress });
+  // Coalesced: a progress counter only needs a current value, and sending one
+  // per answer to every board is O(players^2) writes per number.
+  broadcastCoalesced(gameId, 'answers', { seq, ...progress });
 
   // NOTE what is deliberately absent: onTicket and wasCorrect.
   //

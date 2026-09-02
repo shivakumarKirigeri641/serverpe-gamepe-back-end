@@ -471,7 +471,10 @@ details.called[open] summary::after{transform:rotate(180deg)}
     hideCountdown();
     var r = state.results || {prizes:[], players:[]};
     var fullHouse = state.game.endedReason === 'full_house';
-    var reason = fullHouse ? 'Full House! That is game.' : 'All 90 numbers called.';
+    var abandoned = state.game.endedReason === 'abandoned';
+    var reason = fullHouse ? 'Full House! That is game.'
+      : abandoned ? 'Too few players were left to carry on.'
+      : 'All 90 numbers called.';
 
     // Who took the Full House - from the results, so a reload still shows it.
     var champ = (r.prizes.filter(function(p){ return p.key === 'full_house'; })[0] || {}).winner
@@ -479,7 +482,16 @@ details.called[open] summary::after{transform:rotate(180deg)}
     var youWon = champ && state.you && champ === state.you.name;
 
     var html = '';
-    if (fullHouse && champ) {
+    // No trophy and no confetti for an abandoned game - nobody won.
+    if (abandoned) {
+      html += '<div class="card" style="text-align:center">' +
+        '<div style="font-size:38px;line-height:1;margin-bottom:6px">🛑</div>' +
+        '<h2>Game ended early</h2>' +
+        '<div class="muted">' + (lastWinner && lastWinner.leaver
+          ? esc(lastWinner.leaver) + ' left, which left too few players to carry on.'
+          : 'Too few players were left to carry on.') +
+        ' No prizes were awarded.</div></div>';
+    } else if (fullHouse && champ) {
       html += '<div class="celebrate" id="celebrate">' +
         '<div class="cup">' + (youWon ? '🏆' : '🎉') + '</div>' +
         '<h2>' + (youWon ? 'You did it' : 'Full House') + '</h2>' +
@@ -521,7 +533,7 @@ details.called[open] summary::after{transform:rotate(180deg)}
       '</div>' + ticketHtml();
 
     setView(html, 'over');
-    if (fullHouse && champ) confetti();
+    if (fullHouse && champ && !abandoned) confetti();
   }
 
   /** A short burst of drawn confetti. No asset request, no library. */

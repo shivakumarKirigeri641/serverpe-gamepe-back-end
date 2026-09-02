@@ -95,7 +95,7 @@ CREATE TABLE games (
   charged_paise     int         NOT NULL DEFAULT 0,
   status            text        NOT NULL DEFAULT 'lobby'
                       CHECK (status IN ('lobby','running','finished','abandoned')),
-  expected_players  int         NOT NULL CHECK (expected_players BETWEEN 2 AND 500),
+  expected_players  int         NOT NULL CHECK (expected_players BETWEEN 2 AND 2000),
 
   -- All 90 numbers, shuffled once at creation. Draws advance `cursor` through
   -- this array, so a delayed or duplicated tick can never reorder the game,

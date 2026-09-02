@@ -97,6 +97,52 @@ export function listenerCount(gameId) {
   return rooms.get(String(gameId))?.size ?? 0;
 }
 
+/**
+ * Coalesced broadcast: at most one send per game per window, carrying only the
+ * latest payload.
+ *
+ * This exists because of a measured problem. The "N of M have answered" event
+ * fired once per answer, and each event was written to every open board — so a
+ * game of 500 sent 250,000 socket writes for a single number, and p95 answer
+ * latency went from 0.6s to 3.2s. The count is a progress indicator; nobody
+ * needs every intermediate value, only a current one.
+ *
+ * Draws and prize claims deliberately do NOT go through this. Those are events
+ * players react to, and delaying one by even a moment would be felt.
+ */
+const pendingCoalesced = new Map();   // key -> { data, timer }
+
+export function broadcastCoalesced(gameId, event, data, windowMs = 400) {
+  const key = `${gameId}:${event}`;
+  const existing = pendingCoalesced.get(key);
+
+  if (existing) {
+    // A newer count supersedes the one waiting to go out.
+    existing.data = data;
+    return;
+  }
+
+  const entry = {
+    data,
+    timer: setTimeout(() => {
+      pendingCoalesced.delete(key);
+      broadcast(gameId, event, entry.data);
+    }, windowMs),
+  };
+  entry.timer.unref?.();
+  pendingCoalesced.set(key, entry);
+}
+
+/** Drops anything still waiting for a game that has ended. */
+export function cancelCoalesced(gameId) {
+  for (const [key, entry] of pendingCoalesced) {
+    if (key.startsWith(`${gameId}:`)) {
+      clearTimeout(entry.timer);
+      pendingCoalesced.delete(key);
+    }
+  }
+}
+
 /** Closes every stream - used on shutdown so browsers reconnect promptly. */
 export function closeAll() {
   for (const set of rooms.values()) {

@@ -15,7 +15,7 @@ import { pool } from '../db/pool.js';
 import { publishedTestimonials } from '../services/feedback.service.js';
 import { businessProfile, legalDocuments } from '../services/admin-data.service.js';
 import { POLICY_VERSION } from '../services/player.service.js';
-import { trialState } from '../services/settings.service.js';
+import { trialState, maintenance } from '../services/settings.service.js';
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const ok = (res, data, seconds = 60) => {
@@ -56,13 +56,18 @@ export function publicRoutes() {
     ok(res, businessProfile(config), 300)));
 
   /**
-   * What a host is offered. One plan while the trial runs - stated plainly
-   * rather than dressed up as a price list that does not exist yet.
+   * What a host is offered.
+   *
+   * One plan is live - the free trial. The sponsorship plan is defined but
+   * marked `available: false`, so the shape is settled and the copy is written
+   * before it is switched on. Nothing bills anyone while `enabled` is false.
    */
   router.get('/public/plans', wrap(async (req, res) => {
     const hi = req.query.lang === 'hi';
     const trial = trialState();
-    ok(res, [{
+    const s = config.sponsorship;
+
+    const plans = [{
       key: 'free_trial',
       name: hi ? 'मुफ़्त ट्रायल' : 'Free Trial',
       tagline: hi ? 'अभी सब कुछ मुफ़्त' : 'Everything free, right now',
@@ -79,7 +84,54 @@ export function publicRoutes() {
           ],
       available: !trial.isOver,
       ends_at: trial.freeTrialEndsAt,
-    }], 300);
+    }];
+
+    plans.push({
+      key: 'sponsor_quizpe',
+      name: hi ? 'एक अभिभावक को प्रायोजित करें' : 'Sponsor a parent',
+      tagline: hi
+        ? `QuizPe पर एक अभिभावक को प्रायोजित करें, ${s.complimentaryHours} घंटे का खेल मुफ़्त`
+        : `Sponsor a parent on QuizPe, play free for ${s.complimentaryHours} hours`,
+      price_paise: s.pricePaise,
+      price_label: `₹${Math.round(s.pricePaise / 100)}`,
+      currency: 'INR',
+      features: hi
+        ? [
+            'QuizPe पर एक अभिभावक के लिए दैनिक रिवीजन क्विज़',
+            `${s.complimentaryHours} घंटे का असीमित खेल`,
+            'पहला गेम शुरू होते ही समय शुरू',
+          ]
+        : [
+            'A daily revision quiz for one parent on QuizPe',
+            `${s.complimentaryHours} hours of unlimited games, complimentary`,
+            'The clock starts when your first game does, not at payment',
+          ],
+      // Defined, costed and worded - but not on sale. The marketing site is
+      // expected to show this as "coming soon" rather than take money.
+      available: false,
+      coming_soon: true,
+    });
+
+    ok(res, plans, 300);
+  }));
+
+  /**
+   * Planned downtime, for the site's banner.
+   *
+   * Public and unauthenticated on purpose: it has to be readable exactly when
+   * the rest of the platform is not, and it contains nothing private.
+   */
+  router.get('/public/maintenance', wrap(async (_q, res) => {
+    const w = maintenance();
+    ok(res, {
+      active: w.active,
+      upcoming: w.upcoming,
+      from: w.from,
+      to: w.to,
+      message: w.message,
+      endsInMinutes: w.endsInMinutes,
+      startsInMinutes: w.startsInMinutes,
+    }, 30);   // short cache - this is the one thing that must not go stale
   }));
 
   router.get('/public/legal', wrap(async (_q, res) =>

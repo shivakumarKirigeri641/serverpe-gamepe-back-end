@@ -437,6 +437,36 @@ export function adminRoutes() {
     log: [],
   }))));
 
+  // ─── maintenance window ──────────────────────────────────────────────────
+
+  router.get('/maintenance', wrap(async (_q, res) => ok(res, settings.maintenance())));
+
+  /**
+   * Schedule, edit or lift planned downtime.
+   *
+   * Takes effect immediately across every surface: the WhatsApp bot starts
+   * replying with the notice, and the marketing site reads the same state from
+   * its public endpoint. No restart, no deploy.
+   */
+  router.put('/maintenance', wrap(async (req, res) => {
+    try {
+      const next = await settings.setMaintenance({
+        enabled: req.body?.enabled,
+        force: req.body?.force,
+        from: req.body?.from,
+        to: req.body?.to,
+        message: req.body?.message,
+      }, req.admin?.label ?? 'admin');
+
+      log.warn('maintenance window changed', {
+        by: req.admin?.label, active: next.active, from: next.from, to: next.to,
+      });
+      ok(res, next);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  }));
+
   router.get('/business', wrap(async (_q, res) => ok(res, data.businessProfile(config))));
 
   router.get('/legal/documents', wrap(async (_q, res) =>

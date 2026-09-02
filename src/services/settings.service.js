@@ -14,7 +14,10 @@ import { query } from '../db/pool.js';
 import { config } from '../config/env.js';
 import { log } from '../utils/logger.js';
 
-export const KEYS = { TRIAL_ENDS_AT: 'free_trial_ends_at' };
+export const KEYS = {
+  TRIAL_ENDS_AT: 'free_trial_ends_at',
+  MAINTENANCE: 'maintenance',
+};
 
 const cache = new Map();
 
@@ -84,6 +87,87 @@ export async function setTrialEndsAt(endsAt, updatedBy) {
   }
   await setSetting(KEYS.TRIAL_ENDS_AT, endsAt, updatedBy);
   return trialState();
+}
+
+// --- Maintenance window ----------------------------------------------------
+
+/**
+ * Planned downtime, announced everywhere at once.
+ *
+ * Two independent switches, because they answer different questions:
+ *
+ *   enabled  - "there IS a maintenance window", set in advance
+ *   force    - "we are down RIGHT NOW", regardless of the clock
+ *
+ * A window that has not started yet is announced but does not block anything,
+ * so players get warned before it bites. `force` exists for the case the
+ * window was wrong or something broke unexpectedly.
+ */
+const MAINTENANCE_DEFAULT = {
+  enabled: false,
+  force: false,
+  from: null,
+  to: null,
+  message: '',
+};
+
+export function maintenance() {
+  let stored = MAINTENANCE_DEFAULT;
+  const raw = effective(KEYS.MAINTENANCE, null);
+  if (raw) {
+    try {
+      stored = { ...MAINTENANCE_DEFAULT, ...JSON.parse(raw) };
+    } catch {
+      /* a corrupt value must never take the bot down */
+    }
+  }
+
+  const now = Date.now();
+  const from = stored.from ? new Date(stored.from).getTime() : null;
+  const to = stored.to ? new Date(stored.to).getTime() : null;
+
+  // No window at all means "as soon as it is enabled"; an open-ended window
+  // means "from then until we say otherwise".
+  const started = from === null || now >= from;
+  const ended = to !== null && now > to;
+
+  const active = stored.force || (stored.enabled && started && !ended);
+  const upcoming = stored.enabled && !stored.force && from !== null && now < from;
+
+  return {
+    ...stored,
+    active,
+    upcoming,
+    // Reported so a banner can say "back in 40 minutes" rather than "later".
+    endsInMinutes: active && to ? Math.max(0, Math.ceil((to - now) / 60_000)) : null,
+    startsInMinutes: upcoming ? Math.max(0, Math.ceil((from - now) / 60_000)) : null,
+    ...meta(KEYS.MAINTENANCE),
+  };
+}
+
+export async function setMaintenance(patch, updatedBy) {
+  const current = maintenance();
+  const next = {
+    enabled: patch.enabled ?? current.enabled,
+    force: patch.force ?? current.force,
+    from: patch.from === undefined ? current.from : patch.from,
+    to: patch.to === undefined ? current.to : patch.to,
+    message: patch.message === undefined ? current.message : String(patch.message).slice(0, 600),
+  };
+
+  for (const key of ['from', 'to']) {
+    if (next[key]) {
+      const when = new Date(next[key]);
+      if (Number.isNaN(when.getTime())) throw new Error(`"${next[key]}" is not a date we can read`);
+      next[key] = when.toISOString();
+    }
+  }
+  if (next.from && next.to && new Date(next.to) <= new Date(next.from)) {
+    throw new Error('The window must end after it starts');
+  }
+
+  await setSetting(KEYS.MAINTENANCE, JSON.stringify(next), updatedBy);
+  return maintenance();
 }
 
 /** Everything the trial screen and the WhatsApp plan card need. */

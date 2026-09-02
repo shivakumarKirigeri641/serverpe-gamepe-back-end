@@ -18,6 +18,19 @@ export const BUTTONS = {
 
 const brand = () => config.brandName;
 
+/** A time a player can act on - "2 Sep, 9:30 pm" rather than an ISO string. */
+function formatTime(iso) {
+  if (!iso) return 'shortly';
+  try {
+    return new Date(iso).toLocaleString('en-IN', {
+      day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
+      timeZone: config.timezone,
+    });
+  } catch {
+    return 'shortly';
+  }
+}
+
 function trialEndsOn() {
   try {
     return new Date(trialEndsAt()).toLocaleDateString('en-IN', {
@@ -115,6 +128,44 @@ export const copy = {
   feedbackDone: (hadComment) =>
     (hadComment ? `Thank you — noted. 💛\n\n` : `No problem at all. 💛\n\n`) +
     `Type *hi* whenever you want another game.`,
+
+  /**
+   * The only thing the bot says during planned downtime.
+   *
+   * Says what is happening, when it ends, and that nothing was lost - the
+   * three things someone who just messaged an unresponsive service wants to
+   * know. An operator's own wording replaces the middle line if they set one.
+   */
+  maintenance: (window) => {
+    const back = window.endsInMinutes != null
+      ? (window.endsInMinutes > 90
+          ? `We expect to be back by ${formatTime(window.to)}.`
+          : `We expect to be back in about ${window.endsInMinutes} minute${window.endsInMinutes === 1 ? '' : 's'}.`)
+      : window.to
+        ? `We expect to be back by ${formatTime(window.to)}.`
+        : `We will be back shortly.`;
+
+    return (
+      `🔧 *${brand()} is down for scheduled maintenance*\n\n` +
+      (window.message ? `${window.message}\n\n` : '') +
+      `${back}\n\n` +
+      `Nothing you have played is lost. Message *hi* once we are back and ` +
+      `everything will be exactly where you left it.\n\n` +
+      `Sorry for the interruption.`
+    );
+  },
+
+  notInAGame: () =>
+    `You are not in a game right now.\n\nType *hi* to start one.`,
+
+  /** What the leaver themselves is told. Never celebratory. */
+  youLeft: (code, aborted) =>
+    `You have left game *${code}*.\n\n` +
+    (aborted
+      ? `That left too few players to carry on, so the game has ended for everyone. ` +
+        `No prizes were awarded.\n\n`
+      : `The others are still playing.\n\n`) +
+    `Type *hi* whenever you would like another game.`,
 
   /** Sent with the end-of-game summary. */
   gameReport: (code, url) =>

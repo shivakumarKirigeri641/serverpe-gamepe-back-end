@@ -177,6 +177,52 @@ export async function startGame({ gameId, playerId }) {
   });
 }
 
+/**
+ * A player leaves.
+ *
+ * If that takes a running game below the minimum, the game is abandoned rather
+ * than left limping: a "game" with one player is not a game, and letting the
+ * numbers keep coming would be worse than stopping cleanly.
+ *
+ * @returns {{game, remaining, aborted}} aborted is true when this leave ended it
+ */
+export async function leaveGame({ gameId, playerId }) {
+  return withTransaction(async (client) => {
+    const { rows } = await client.query('SELECT * FROM games WHERE id = $1 FOR UPDATE', [gameId]);
+    const game = rows[0];
+    if (!game) throw new GameError('no_such_game', 'That game does not exist');
+
+    await client.query(
+      `UPDATE game_players SET left_at = now()
+        WHERE game_id = $1 AND player_id = $2 AND left_at IS NULL`,
+      [gameId, playerId],
+    );
+
+    const { rows: counted } = await client.query(
+      'SELECT count(*)::int AS n FROM game_players WHERE game_id = $1 AND left_at IS NULL',
+      [gameId],
+    );
+    const remaining = counted[0].n;
+
+    // Only a game that is actually being played can be abandoned. A lobby that
+    // empties out is left alone for the expiry sweep - nobody is waiting on it.
+    const shouldAbort =
+      game.status === 'running' && remaining < config.game.minPlayers;
+
+    if (shouldAbort) {
+      await client.query(
+        `UPDATE games
+            SET status = 'abandoned', ended_at = now(),
+                ended_reason = 'abandoned', next_draw_at = NULL
+          WHERE id = $1`,
+        [gameId],
+      );
+    }
+
+    return { game, remaining, aborted: shouldAbort };
+  });
+}
+
 /** Everything the lobby screen needs, in one round trip. */
 export async function getLobby(gameId) {
   const game = await getGameById(gameId);

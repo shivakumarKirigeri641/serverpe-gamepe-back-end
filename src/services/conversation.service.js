@@ -18,17 +18,21 @@ import {
   logMessage, displayNameFor, getPlayerById,
 } from './player.service.js';
 import {
-  createGame, joinGame, getGameByCode, findActiveGameForPlayer, GameError,
+  createGame, joinGame, getGameByCode, findActiveGameForPlayer, leaveGame, GameError,
 } from './game.service.js';
 import { recordEvent } from './tracking.service.js';
 import { STATES } from './conversation-states.js';
-import { FEEDBACK_BUTTONS, reportUrl } from './gameover.service.js';
+import { maintenance } from './settings.service.js';
+import { broadcast } from './live.service.js';
+import { FEEDBACK_BUTTONS, reportUrl, announceGameAbandoned } from './gameover.service.js';
 import { saveRating, saveComment } from './feedback.service.js';
 
 export { STATES } from './conversation-states.js';
 
 const GREETINGS = /^(hi|hii+|hey|hello|start|menu|namaste|namaskar)\b/i;
 const JOIN_COMMAND = /^join\s+([a-z0-9]{4,10})$/i;
+/** Words a player actually uses when they want out. */
+const LEAVE_COMMAND = /^(leave|quit|exit|stop)\b/i;
 
 /**
  * Entry point for one inbound message. Never throws: a failure here would
@@ -62,10 +66,23 @@ export async function handleInbound(event) {
 async function route(player, event) {
   const state = await getState(player.id);
 
+  // Maintenance takes precedence over everything a player could ask for -
+  // except finishing a game that is already running, which is why this checks
+  // for an active game rather than refusing outright.
+  const window = maintenance();
+  if (window.active) {
+    const playing = await findActiveGameForPlayer(player.id);
+    if (!playing || playing.status !== 'running') {
+      return sendText(player.wa_id, copy.maintenance(window));
+    }
+  }
+
   // A JOIN link works from anywhere in the conversation - it is how invited
   // players arrive, and they should never have to navigate a menu first.
   const joinMatch = event.type === 'text' && event.text.match(JOIN_COMMAND);
   if (joinMatch) return handleJoinRequest(player, joinMatch[1]);
+
+  if (event.type === 'text' && LEAVE_COMMAND.test(event.text)) return handleLeave(player);
 
   if (event.type === 'text' && GREETINGS.test(event.text)) return handleGreeting(player);
 
@@ -247,6 +264,31 @@ async function handleJoinRequest(player, rawCode) {
   } catch (err) {
     if (err instanceof GameError) return sendText(player.wa_id, copy.joinFailed(err.message));
     throw err;
+  }
+}
+
+/**
+ * A player leaves. If that drops a running game below the minimum the game is
+ * abandoned, and everyone still in it is told - professionally, with no
+ * celebration, because nobody won.
+ */
+async function handleLeave(player) {
+  const active = await findActiveGameForPlayer(player.id);
+  if (!active) return sendText(player.wa_id, copy.notInAGame());
+
+  const { remaining, aborted } = await leaveGame({ gameId: active.id, playerId: player.id });
+  await setState(player.id, STATES.MENU, {});
+  await recordEvent({
+    type: 'game.left', source: 'whatsapp', playerId: player.id, gameId: active.id,
+    properties: { remaining, aborted },
+  });
+
+  await sendText(player.wa_id, copy.youLeft(active.code, aborted));
+
+  if (aborted) {
+    broadcast(active.id, 'game_over', { reason: 'abandoned', leaver: displayNameFor(player) });
+    announceGameAbandoned(active.id, { leaverName: displayNameFor(player) })
+      .catch((err) => log.error('abandon notice failed', { message: err.message }));
   }
 }
 
