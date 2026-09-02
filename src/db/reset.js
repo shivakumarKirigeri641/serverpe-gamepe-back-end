@@ -10,6 +10,7 @@
  * editing one schema file and re-running beats maintaining thirty numbered
  * migrations. It is destructive, so it asks first, every time.
  */
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -23,11 +24,24 @@ const target = `"${config.db.database}" on ${config.db.host}:${config.db.port} a
 const purge = process.argv.includes('--purge');
 const confirmed = purge || process.argv.includes('--yes') || process.argv.includes('-y');
 
-/** Tables schema.sql creates, so we can tell ours apart from leftovers. */
-const OWNED = new Set([
-  'players', 'player_states', 'consents', 'games', 'game_players', 'entries',
-  'draws', 'draw_answers', 'claims', 'processed_messages', 'messages', 'feedback',
-]);
+/**
+ * Tables schema.sql creates, so we can tell ours apart from leftovers.
+ *
+ * Read from the file rather than listed here. A hardcoded list is guaranteed
+ * to fall behind — this one had, badly: it named twelve tables while the
+ * schema had grown to twenty-four, so the dry run told an operator their
+ * analytics, board sessions and notification history were "NOT part of this
+ * app" and would be left alone. They would have been dropped. A confirmation
+ * screen that understates what it destroys is worse than no confirmation.
+ */
+function ownedTables() {
+  const sql = readFileSync(SCHEMA_PATH, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const names = [...sql.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?([a-z_][a-z0-9_]*)/gi)]
+    .map((m) => m[1]);
+  return new Set(names);
+}
+
+const OWNED = ownedTables();
 
 async function listExistingTables() {
   const { rows } = await pool.query(
@@ -49,7 +63,29 @@ async function main() {
       const mine = existing.filter((t) => OWNED.has(t));
       if (mine.length) {
         console.log(`\n--yes will DROP and rebuild ${mine.length} table(s):\n`);
-        console.log('  ' + mine.join('\n  '));
+
+        // Row counts, because "games" and "games (0 rows)" are entirely
+        // different decisions and the operator cannot tell them apart from a
+        // list of names. Counted exactly rather than estimated from pg_class:
+        // this screen exists to be trusted, and a stale estimate that reads
+        // zero on a table holding real games would be the worst possible lie.
+        const counts = await Promise.all(mine.map(async (t) => {
+          try {
+            const { rows } = await pool.query(`SELECT count(*)::int AS n FROM "${t}"`);
+            return [t, rows[0].n];
+          } catch {
+            return [t, null];          // unreadable; say so rather than guess
+          }
+        }));
+
+        const width = Math.max(...mine.map((t) => t.length));
+        let total = 0;
+        for (const [t, n] of counts) {
+          if (n !== null) total += n;
+          const label = n === null ? '?' : n.toLocaleString();
+          console.log(`  ${t.padEnd(width)}  ${n ? label : (n === 0 ? 'empty' : label)}`);
+        }
+        console.log(`\n  ${total.toLocaleString()} rows in total would be destroyed.`);
       }
       if (leftovers.length) {
         console.log(`\n${leftovers.length} other table(s) are NOT part of this app.`);
