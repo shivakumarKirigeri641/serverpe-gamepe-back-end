@@ -11,7 +11,6 @@ import { withTransaction, query } from '../db/pool.js';
 import { log } from '../utils/logger.js';
 import { config } from '../config/env.js';
 import { taglineFor } from '../games/tambola/taglines.js';
-import { isGameOver } from '../games/tambola/claims.js';
 import { broadcast, broadcastCoalesced, cancelCoalesced } from './live.service.js';
 import { announceGameOver } from './gameover.service.js';
 
@@ -22,7 +21,8 @@ import { announceGameOver } from './gameover.service.js';
  * @param {number|null} expectedCursor  when given, the draw only happens if
  *        the game is still at this position. A tick queued before someone
  *        else drew is then correctly ignored instead of double-drawing.
- * @returns {Promise<null | {seq, value, finished, tagline}>}
+ * @returns {Promise<null | {seq, value, isLast}>} null when nothing was drawn -
+ *          a stale tick, a game that is not running, or the game just ending.
  */
 export async function performDraw(gameId, expectedCursor = null) {
   const result = await withTransaction(async (client) => {
@@ -81,10 +81,19 @@ export async function performDraw(gameId, expectedCursor = null) {
       [gameId],
     );
 
-    const over = isGameOver({ alreadyAwarded: [], drawnCount: seq });
-    if (over.over) await endGame(client, gameId, over.reason);
-
-    return { seq, value, finished: over.over, reason: over.reason ?? null };
+    // The 90th number is NOT the end of the game - it is the last number, and
+    // it gets the same time on screen as the other 89.
+    //
+    // Ending here was wrong in a way players could see: the draw and the
+    // game-over both went out in the same instant, so the board flipped
+    // straight to the results and the last number anyone actually saw was 89.
+    // Nobody could mark it, and a Full House completing on the final number
+    // was unclaimable.
+    //
+    // Instead the cursor advances past the end as normal, and the NEXT tick
+    // takes the `cursor >= sequence.length` branch above and ends the game -
+    // one full draw interval later, exactly like every other number.
+    return { seq, value, isLast: seq >= sequence.length };
   });
 
   if (!result) return null;
@@ -107,12 +116,7 @@ export async function performDraw(gameId, expectedCursor = null) {
     result.seq,
   );
 
-  if (result.finished) {
-    broadcast(gameId, 'game_over', { reason: result.reason });
-    announceGameOver(gameId).catch(() => {});
-  }
-
-  log.info('draw', { gameId, seq: result.seq, value: result.value });
+  log.info('draw', { gameId, seq: result.seq, value: result.value, last: result.isLast });
   return result;
 }
 

@@ -76,8 +76,10 @@ header{display:flex;align-items:center;gap:10px;padding:6px 2px 12px}
 .answer button.yes.on{background:var(--ok);border-color:var(--ok);color:#fff}
 .answer button.no.on{background:var(--no);border-color:var(--no);color:#fff}
 .answer button[disabled]{opacity:.45;cursor:default}
+/* Only ever carries an error ("could not record that"). There is no
+   right/wrong styling because the board never tells a player whether their
+   answer was correct - that comes at the end of the game. */
 .nudge{text-align:center;font-size:13px;color:var(--dim);min-height:1.3em;margin:-4px 0 8px}
-.nudge.good{color:var(--ok)} .nudge.bad{color:var(--gold)}
 
 /* ---- waiting for the rest of the table ---- */
 .waiting{
@@ -151,6 +153,37 @@ header{display:flex;align-items:center;gap:10px;padding:6px 2px 12px}
 }
 #countdown .cap{margin-top:22px;text-align:center;color:#f7dfa5;font-size:15px;letter-spacing:.04em}
 
+/* ---- "that was the last number" ----------------------------------------
+   Shown when the 90th number has been called and nobody took the Full House.
+   It is a full-screen moment rather than a line on the results card because
+   the game ending on the numbers running out is quiet - there is no winner to
+   announce - and without it the board would simply swap to a list of prizes
+   with no sense that anything had concluded. */
+#allcalled{
+  position:fixed;inset:0;z-index:60;display:grid;place-items:center;padding:24px;
+  background:radial-gradient(circle at 50% 42%,rgba(92,15,43,.97),rgba(12,11,15,.99) 72%);
+  backdrop-filter:blur(3px);animation:fadein .4s ease-out;
+}
+@keyframes fadein{from{opacity:0}to{opacity:1}}
+#allcalled .inner{text-align:center;max-width:340px}
+#allcalled .mark{font-size:56px;line-height:1;animation:burst .6s cubic-bezier(.2,1.5,.35,1)}
+#allcalled h2{margin:14px 0 6px;font:800 27px/1.2 ui-rounded,system-ui,sans-serif;color:var(--gold)}
+#allcalled .sub{color:#f7dfa5;font-size:15px;line-height:1.55}
+#allcalled .count{
+  margin-top:22px;font-size:13.5px;color:var(--dim);
+  display:flex;align-items:center;gap:9px;justify-content:center;
+}
+#allcalled .count .n{
+  width:26px;height:26px;border-radius:50%;flex:none;display:grid;place-items:center;
+  background:rgba(212,165,55,.16);border:1px solid rgba(212,165,55,.45);
+  font:700 13px ui-monospace,Menlo,monospace;color:var(--gold);
+}
+/* Nobody is ever trapped in a screen that is about to navigate away. */
+#allcalled .stay{
+  display:inline-block;margin-top:16px;font-size:13px;color:var(--dim);
+  text-decoration:underline;background:none;border:0;cursor:pointer;
+}
+
 /* The moment it hits zero. */
 #countdown .go{
   font:800 44px/1.1 ui-rounded,system-ui;color:var(--gold);text-align:center;
@@ -217,7 +250,9 @@ td.marked::after{
 }
 @keyframes stamp{0%{transform:scale(.2);opacity:0}70%{transform:scale(1.15)}100%{transform:scale(1);opacity:1}}
 td.marked{color:#06301f;font-weight:700}
-td.hit{box-shadow:inset 0 0 0 3px var(--gold)}
+/* There is deliberately no style for "the number being called is on this
+   ticket". Highlighting it would answer the question the player is being
+   asked. See updateTicket(). */
 
 /* ---- called numbers panel ---- */
 details.called{background:var(--panel);border:1px solid var(--line);border-radius:12px;margin:10px 0}
@@ -658,6 +693,64 @@ details.called[open] summary::after{transform:rotate(180deg)}
 
     setView(html, 'over');
     if (fullHouse && champ && !abandoned) confetti();
+
+    // The 90th number has been called and no one completed a ticket. Say so
+    // properly, then take them back to WhatsApp where the report is waiting.
+    if (!fullHouse && !abandoned) allCalled();
+  }
+
+  /**
+   * The end-of-numbers moment, then back to WhatsApp by itself.
+   *
+   * Shown once per page: overShown stops a reconnect or a visibility resync
+   * from replaying it over a player who is reading their results.
+   *
+   * The redirect is deliberately escapable. WhatsApp's in-app browser is where
+   * most of these games are played and it does not always honour a scripted
+   * navigation, so the results, the report link and the manual button all stay
+   * underneath — the overlay is the nice path, never the only one.
+   */
+  var overShown = false;
+  function allCalled(){
+    if (overShown) return;
+    overShown = true;
+
+    var secs = 6;
+    var el = document.createElement('div');
+    el.id = 'allcalled';
+    el.innerHTML =
+      '<div class="inner">' +
+        '<div class="mark">🎱</div>' +
+        '<h2>That is all 90</h2>' +
+        '<div class="sub">Every number has been called, so the game ends here. ' +
+          'Nobody completed a full ticket this time.</div>' +
+        '<div class="count"><span class="n" id="acN">' + secs + '</span>' +
+          '<span>Taking you back to WhatsApp…</span></div>' +
+        '<button class="stay" id="acStay">Stay and see the results</button>' +
+      '</div>';
+    document.body.appendChild(el);
+
+    var timer = null;
+    var close = function(){
+      if (timer) clearInterval(timer);
+      timer = null;
+      if (el.parentNode) el.parentNode.removeChild(el);
+    };
+
+    document.getElementById('acStay').onclick = close;
+
+    timer = setInterval(function(){
+      secs--;
+      var n = document.getElementById('acN');
+      if (n) n.textContent = Math.max(0, secs);
+      if (secs > 0) return;
+
+      close();
+      var number = state.businessNumber || '';
+      // With no business number configured there is nowhere to send them, so
+      // the results simply stay on screen rather than a broken wa.me link.
+      if (number) location.href = 'https://wa.me/' + number;
+    }, 1000);
   }
 
   /** A short burst of drawn confetti. No asset request, no library. */
@@ -717,13 +810,20 @@ details.called[open] summary::after{transform:rotate(180deg)}
       '<table><tbody>' + rows + '</tbody></table></div>';
   }
 
+  /**
+   * Paints only what the player has already decided.
+   *
+   * Deliberately says nothing about the number being called. Ringing the cell
+   * that matches the current draw would hand the player the answer before they
+   * press anything, which is the entire skill of tambola - finding your own
+   * number before the caller moves on. Marks appear only after the answer is
+   * given, and a wrong answer is never corrected mid-game.
+   */
   function updateTicket(){
     var marked = state.marked || [];
-    var cur = state.current;
     document.querySelectorAll('.ticket td[data-n]').forEach(function(td){
       var n = Number(td.dataset.n);
       td.classList.toggle('marked', marked.indexOf(n) >= 0);
-      td.classList.toggle('hit', !!(cur && cur.value === n));
     });
   }
 
