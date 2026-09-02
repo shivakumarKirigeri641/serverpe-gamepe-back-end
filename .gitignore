@@ -1,35 +1,9 @@
 node_modules/
-dist/
-# Real credentials, never committed — one file per environment.
 .env
-.env.local
 .env.prod
-.env.example
-.env.*.local
-
-# NOTE: .env.example IS committed on purpose. It is the template that tells the
-# next person which variables exist, and ignoring it defeats the point.
+.env.local
+src/temp/
+src/uploads/
+npm-debug.log*
 *.log
-coverage/
 .DS_Store
-
-.scratch/
-
-# Generated PDFs. The folders are kept (see .gitkeep), the files are not:
-# they are player records, not source.
-src/uploads/**/*.pdf
-
-# Generated demo films, and the soundtrack they are built from.
-#
-# The .mp4s are build output — nine megabytes regenerated whenever a scene is
-# retimed, and git would keep every version of them forever. They are produced
-# by `npx tsx scripts/make-demo-video.ts` and copied to the server separately.
-#
-# The cover images ARE committed: they are small, and the poster on the demo
-# page should work even on a machine where the films have not been rendered.
-src/media/*.mp4
-
-# Somebody else's music. Licensed to us, not ours to redistribute, and not
-# served to the internet either — the generator reads it from here and only
-# the finished film leaves the machine.
-src/assets/music/
