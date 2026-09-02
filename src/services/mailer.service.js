@@ -35,9 +35,12 @@ export function mailConfigured() {
 }
 
 /**
+ * @param {string} [html] the styled version. Always send the plain `text` too:
+ *        some clients, and every plain-text preference, fall back to it, and a
+ *        multipart message with only HTML looks broken in those.
  * @returns {Promise<{sent:boolean, error?:string}>} never throws
  */
-export async function sendMail({ to, subject, text, replyTo }) {
+export async function sendMail({ to, subject, text, html, replyTo }) {
   const m = config.mail;
 
   if (!mailConfigured()) {
@@ -52,6 +55,7 @@ export async function sendMail({ to, subject, text, replyTo }) {
       replyTo: replyTo || undefined,
       subject,
       text,
+      html: html || undefined,
     });
     log.info('mail sent', { to, subject });
     return { sent: true };

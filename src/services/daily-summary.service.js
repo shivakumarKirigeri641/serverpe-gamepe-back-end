@@ -13,6 +13,7 @@ import { query } from '../db/pool.js';
 import { config } from '../config/env.js';
 import { log } from '../utils/logger.js';
 import { sendMail } from './mailer.service.js';
+import * as T from './mail-template.js';
 
 const TZ = 'Asia/Kolkata';
 
@@ -123,18 +124,44 @@ async function standing() {
  * the player counts above; the line below says so rather than leaving the gap
  * looking like lost data.
  */
+/**
+ * Day-on-day movement for one place, short enough to sit on a bar.
+ *
+ * "+2" rather than "+67%": at the scale a single city reaches in a day the
+ * count is the honest number and the percentage is theatre. Three players
+ * becoming five is "+2", not "a 67% surge".
+ */
+function placeMove(now, before) {
+  const n = Number(now) || 0;
+  const b = Number(before) || 0;
+  if (n === b) return { change: null, direction: 'flat' };
+  if (b === 0) return { change: 'new', direction: 'up' };
+  if (n === 0) return { change: 'gone', direction: 'down' };
+  const d = n - b;
+  return { change: (d > 0 ? '+' : '') + d, direction: d > 0 ? 'up' : 'down' };
+}
+
 async function geography(offset) {
   const args = [offset, TZ];
+  // Both days in one pass. Two separate queries would silently drop any
+  // place that had players the day before and none yesterday - which is
+  // exactly the movement most worth seeing.
   const byCol = async (col) => (await query(`
-    WITH d AS (SELECT ((now() AT TIME ZONE $2)::date - $1::int) AS day)
+    WITH d AS (
+      SELECT ((now() AT TIME ZONE $2)::date - $1::int)       AS day,
+             ((now() AT TIME ZONE $2)::date - ($1::int + 1)) AS day_before
+    )
     SELECT coalesce(nullif(b.${col}, ''), 'unknown') AS name,
-           count(DISTINCT b.player_id)::int          AS players
+           count(DISTINCT b.player_id) FILTER (
+             WHERE (b.first_seen_at AT TIME ZONE $2)::date = d.day)::int        AS players,
+           count(DISTINCT b.player_id) FILTER (
+             WHERE (b.first_seen_at AT TIME ZONE $2)::date = d.day_before)::int AS players_before
       FROM board_sessions b, d
-     WHERE (b.first_seen_at AT TIME ZONE $2)::date = d.day
+     WHERE (b.first_seen_at AT TIME ZONE $2)::date IN (d.day, d.day_before)
      GROUP BY 1
      ORDER BY players DESC, name
      LIMIT 8
-  `, args)).rows;
+  `, args)).rows.map((r) => ({ ...r, ...placeMove(r.players, r.players_before) }));
 
   const [states, cities, totals] = await Promise.all([
     byCol('region'),
@@ -174,7 +201,7 @@ function geoSection(geo) {
     return ['  No board was opened yesterday, so there is nothing to locate.'];
   }
   const rows = (list) =>
-    list.map((r) => `  ${pad('  ' + r.name)} ${r.players}`);
+    list.map((r) => `  ${pad('  ' + r.name)} ${r.players}${r.change ? `  (${r.change})` : ''}`);
 
   return [
     `  ${pad('Players located')} ${geo.located}   (from ${geo.addresses} address${geo.addresses === 1 ? '' : 'es'})`,
@@ -188,6 +215,165 @@ function geoSection(geo) {
     '  Approximate - resolved from the IP the board was opened from. On mobile',
     '  data this is the carrier gateway, so treat it as a hint, not a fact.',
   ];
+}
+
+
+/* ──────────────────────────────────────────────────────── the HTML body ── */
+
+/** The same delta as delta(), but as parts a card can colour. */
+function move(now, before) {
+  const n = Number(now) || 0;
+  const b = Number(before) || 0;
+  if (b === 0 && n === 0) return { change: null, direction: 'flat' };
+  if (b === 0) return { change: 'new', direction: 'up' };
+  if (n === b) return { change: 'no change', direction: 'flat' };
+  const pct = Math.round(((n - b) / b) * 100);
+  return {
+    change: `${pct > 0 ? '▲ +' : '▼ '}${pct}% vs the day before`,
+    direction: pct > 0 ? 'up' : 'down',
+  };
+}
+
+const card = (label, now, before) => ({ label, value: String(now ?? 0), ...move(now, before) });
+
+/**
+ * The designed version of the same numbers the text body carries.
+ *
+ * Structured as: the four numbers worth knowing before anything else, then
+ * whatever needs attention, then the detail. An operator who reads only the
+ * top of this email on a lock screen should already know whether yesterday was
+ * fine.
+ */
+function summaryHtml({ today, before, now, geo, notes, rate }) {
+  let b = '';
+
+  b += T.statCards([
+    card('New players', today.new_players, before.new_players),
+    card('Active players', today.active_players, before.active_players),
+    card('Games played', today.games_started, before.games_started),
+    card('Prizes won', today.prizes, before.prizes),
+  ]);
+
+  // Problems first — before the operator has to go looking for them.
+  const trouble = notes.length > 0;
+  b += T.callout(
+    trouble ? notes : ['Nothing needs your attention.'],
+    { tone: trouble ? 'bad' : 'good', title: trouble ? 'Worth a look' : 'All clear' },
+  );
+
+  b += T.heading('People');
+  b += T.facts([
+    { label: 'New players', value: delta(today.new_players, before.new_players) },
+    { label: 'Active players', value: delta(today.active_players, before.active_players) },
+    { label: 'Players seated in a game', value: delta(today.players_seated, before.players_seated) },
+    { label: 'Hosts who ran a game', value: delta(today.hosts, before.hosts) },
+  ]);
+
+  b += T.heading('Games');
+  b += T.facts([
+    { label: 'Rooms created', value: delta(today.games_created, before.games_created) },
+    { label: 'Games started', value: delta(today.games_started, before.games_started) },
+    { label: 'Games finished', value: delta(today.games_finished, before.games_finished) },
+    {
+      label: 'Games abandoned',
+      value: delta(today.games_abandoned, before.games_abandoned),
+      tone: Number(today.games_abandoned) > 0 ? 'bad' : undefined,
+    },
+    { label: 'Prizes won', value: delta(today.prizes, before.prizes) },
+  ]);
+
+  b += T.heading('Engagement');
+  b += T.facts([
+    { label: 'Numbers answered', value: delta(today.answers, before.answers) },
+    { label: 'Boards opened', value: delta(today.board_sessions, before.board_sessions) },
+    { label: 'Feedback left', value: delta(today.feedback, before.feedback) },
+    {
+      label: 'Average rating',
+      value: today.avg_rating ? `${today.avg_rating} / 5` : '—',
+      hint: before.avg_rating ? `was ${before.avg_rating}` : undefined,
+    },
+  ]);
+
+  b += T.heading('Messages');
+  b += T.facts([
+    { label: 'Received', value: delta(today.msg_in, before.msg_in) },
+    { label: 'Sent', value: delta(today.msg_out, before.msg_out) },
+    {
+      label: 'Failed to send',
+      value: delta(today.msg_failed, before.msg_failed),
+      tone: Number(today.msg_failed) > 0 ? 'bad' : 'good',
+    },
+  ]);
+
+  b += T.heading('Conversion');
+  b += T.facts([
+    { label: 'Rooms that got started', value: `${rate(today.games_started, today.games_created)}%` },
+    { label: 'Games that finished', value: `${rate(today.games_finished, today.games_started)}%` },
+    {
+      label: 'Players per room',
+      value: today.games_created ? (today.seats / today.games_created).toFixed(1) : '—',
+    },
+  ]);
+
+  // ── geography ───────────────────────────────────────────────────────────
+  b += T.heading('Where they played from');
+  if (!geo.located) {
+    b += T.paragraph('No board was opened yesterday, so there is nothing to locate.', { small: true });
+  } else {
+    const row = (r) => ({
+      label: r.name,
+      value: r.players,
+      change: r.change,
+      direction: r.direction,
+    });
+    // Small, so a place-list label never competes with a section heading.
+    const subLabel = (text) => T.paragraph(text, { small: true });
+    b += T.paragraph(
+      `${geo.located} player${geo.located === 1 ? '' : 's'} could be placed, from ${geo.addresses} address${geo.addresses === 1 ? '' : 'es'}.`,
+      { small: true },
+    );
+    b += subLabel('State / union territory');
+    b += T.bars(geo.states.slice(0, 6).map(row));
+    b += subLabel('City');
+    b += T.bars(geo.cities.slice(0, 6).map(row));
+    b += T.paragraph(
+      'Approximate — resolved from the IP the board was opened from. On mobile data that is the carrier gateway, so the state is worth acting on and the city is a hint.',
+      { small: true },
+    );
+  }
+
+  b += T.heading('Right now');
+  b += T.facts([
+    { label: 'Total players ever', value: now.total_players },
+    { label: 'Total games ever', value: now.total_games },
+    { label: 'Games running', value: now.games_running },
+    { label: 'Rooms waiting to start', value: now.lobbies_waiting },
+    {
+      label: 'Support tickets open',
+      value: now.tickets_open,
+      hint: now.tickets_stale > 0 ? `${now.tickets_stale} over 24h` : undefined,
+      tone: now.tickets_stale > 0 ? 'bad' : undefined,
+    },
+    ...(now.comments_unapproved > 0
+      ? [{ label: 'Comments awaiting approval', value: now.comments_unapproved }]
+      : []),
+  ]);
+
+  b += T.button('Open the admin panel', config.adminUrl || null);
+
+  return T.shell({
+    brand: config.brandName,
+    company: config.business.legalName,
+    eyebrow: 'Daily summary',
+    icon: '📊',
+    title: `Yesterday at ${config.brandName}`,
+    subtitle: `${today.label} · compared with the day before`,
+    preheader: `${today.new_players} new players, ${today.games_started} games, ${today.prizes} prizes`,
+    blocks: b,
+    footNotes: [
+      'Sent once every morning. Switch it off, or batch it, under Notifications in the admin panel.',
+    ],
+  });
 }
 
 export async function buildDailySummary() {
@@ -268,7 +454,8 @@ export async function buildDailySummary() {
     // Same convention as every other alert: the company is the sender name.
     subject: `📊 ${config.brandName} — daily summary, ${today.label}`,
     body: lines.join('\n'),
-    stats: { today, before, now },
+    html: summaryHtml({ today, before, now, geo, notes, rate }),
+    stats: { today, before, now, geo },
   };
 }
 
@@ -300,8 +487,8 @@ export async function sendDailySummary({ force = false } = {}) {
     if (await alreadySentToday()) return { sent: false, reason: 'already sent today' };
   }
 
-  const { subject, body } = await buildDailySummary();
-  const result = await sendMail({ to: config.alerts.recipient, subject, text: body });
+  const { subject, body, html } = await buildDailySummary();
+  const result = await sendMail({ to: config.alerts.recipient, subject, text: body, html });
 
   await query(
     `INSERT INTO notification_log (kind, subject, recipient, event_count, ok, error)

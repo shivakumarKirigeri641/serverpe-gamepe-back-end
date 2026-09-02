@@ -166,6 +166,14 @@ export const config = {
    */
   policiesUrl: (SITE_BASE_URL || PUBLIC_BASE_URL + API_BASE_PATH) + '/policies',
 
+  /**
+   * Where the admin panel is, for the button on every alert email.
+   *
+   * Optional: with nothing set the button is simply left out rather than
+   * pointing at a dead localhost address in an email read on a phone.
+   */
+  adminUrl: optional('ADMIN_PANEL_URL', '') || null,
+
   /** How-to-play, which genuinely does live on the API - it is generated. */
   demoUrl: PUBLIC_BASE_URL + API_BASE_PATH + '/public/demo',
 

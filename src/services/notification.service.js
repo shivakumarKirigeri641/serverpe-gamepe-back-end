@@ -19,6 +19,7 @@ import { query } from '../db/pool.js';
 import { config } from '../config/env.js';
 import { log } from '../utils/logger.js';
 import { sendMail, mailConfigured } from './mailer.service.js';
+import * as T from './mail-template.js';
 
 /**
  * Every alert, with the default that suits how often it actually fires.
@@ -273,6 +274,121 @@ async function gameOriginLines(gameId) {
   }
 }
 
+/* ─────────────────────────────────────────────────────── the styled mail ── */
+
+/**
+ * Turns the plain-text body every alert already produces into HTML blocks.
+ *
+ * The text version stays the source of truth. It is what gets queued, what the
+ * digest re-reads, and what an operator sees if their client refuses HTML — so
+ * rather than maintain two representations of every alert and let them drift,
+ * this reads the shape back out of the text:
+ *
+ *   "Room: ABC123"          a short label and value  ->  a fact row
+ *   "Board froze on 42."    prose                    ->  a quote block
+ *   ""                      a blank line             ->  ends the group
+ *
+ * Deliberately forgiving. An unrecognised line becomes a paragraph rather than
+ * being dropped: a slightly plain email is a much smaller failure than one
+ * that silently loses the sentence explaining what went wrong.
+ */
+function blocksFromLines(lines) {
+  const out = [];
+  let pending = [];
+
+  const flush = () => {
+    if (pending.length) { out.push(T.facts(pending)); pending = []; }
+  };
+
+  for (const raw of lines) {
+    const line = String(raw ?? '');
+    if (!line.trim()) { flush(); continue; }
+
+    const m = line.match(/^([A-Za-z][A-Za-z0-9 /'()-]{0,28}):\s+(.+)$/);
+    if (m) {
+      // "(approximate - from IP)" and friends belong beside the value, greyed,
+      // not competing with it.
+      const [, label, rest] = m;
+      const hint = rest.match(/\s{2,}\((.+)\)\s*$/);
+      pending.push({
+        label,
+        value: hint ? rest.slice(0, hint.index).trim() : rest.trim(),
+        hint: hint ? `(${hint[1]})` : undefined,
+      });
+      continue;
+    }
+
+    flush();
+    // A quoted player message arrives already wrapped in double quotes.
+    const quoted = line.match(/^"([\s\S]*)"$/);
+    out.push(quoted ? T.quote(quoted[1]) : line.length > 90 ? T.quote(line) : T.paragraph(line));
+  }
+
+  flush();
+  return out.join('');
+}
+
+/** One alert, as a styled email. */
+export function renderAlert(key, title, lines) {
+  const t = byKey.get(key);
+  return T.shell({
+    brand: config.brandName,
+    company: config.business.legalName,
+    eyebrow: t?.label ?? 'Alert',
+    icon: t?.icon ?? '🔔',
+    title: title || t?.subject || key,
+    subtitle: new Date().toLocaleString('en-IN', { timeZone: config.timezone, dateStyle: 'medium', timeStyle: 'short' }),
+    preheader: `${t?.subject ?? key} — ${lines.filter(Boolean)[0] ?? ''}`,
+    blocks: blocksFromLines(lines) + T.button('Open the admin panel', config.adminUrl || null),
+    footNotes: t?.description ? [t.description] : [],
+  });
+}
+
+/**
+ * The batched email.
+ *
+ * Grouped by trigger and capped, because the failure mode of a digest is not
+ * being too short — it is 300 identical blocks that nobody scrolls through.
+ */
+export function renderDigest(groups, total) {
+  let blocks = T.callout(
+    [`${total} thing${total === 1 ? '' : 's'} happened in the last ${config.alerts.digestMinutes} minutes.`],
+    { tone: 'info' },
+  );
+
+  for (const [key, bodies] of groups) {
+    const t = byKey.get(key);
+    blocks += T.heading(`${t?.icon ?? '•'}  ${t?.label ?? key} — ${bodies.length}`);
+
+    for (const body of bodies.slice(0, 12)) {
+      const lines = body.split('\n');
+      const title = lines[0];
+      // Drop the title and the trailing "— Brand · timestamp" footer; both are
+      // already carried by the digest itself.
+      const rest = lines.slice(1, -2);
+      blocks += T.paragraph(title);
+      blocks += blocksFromLines(rest);
+      blocks += T.divider();
+    }
+    if (bodies.length > 12) {
+      blocks += T.paragraph(`…and ${bodies.length - 12} more of these.`, { small: true });
+    }
+  }
+
+  blocks += T.button('Open the admin panel', config.adminUrl || null);
+
+  return T.shell({
+    brand: config.brandName,
+    company: config.business.legalName,
+    eyebrow: 'Batched update',
+    icon: '📬',
+    title: `${total} update${total === 1 ? '' : 's'}`,
+    subtitle: `The last ${config.alerts.digestMinutes} minutes · ${new Date().toLocaleString('en-IN', { timeZone: config.timezone, dateStyle: 'medium', timeStyle: 'short' })}`,
+    blocks,
+    footNotes: ['These are the alerts set to batch rather than send instantly. Change that per alert in the admin panel.'],
+  });
+}
+
 /**
  * Records something worth telling the operator about.
  *
@@ -285,13 +401,16 @@ export async function notify(key, { title, lines = [], playerId = null, gameId =
     const mode = await modeFor(key);
     if (mode === 'off') return;
 
+    // A player-level alert gets that player's origin; a game-level one gets
+    // the spread across the table. Never both - it would just be noise.
+    const origin = playerId ? await originLines(playerId) : await gameOriginLines(gameId);
+    const detail = [...lines, ...origin];
+    const heading = title || byKey.get(key)?.subject || key;
+
     const body = [
-      title || byKey.get(key)?.subject || key,
+      heading,
       '',
-      ...lines,
-      // A player-level alert gets that player's origin; a game-level one gets
-      // the spread across the table. Never both - it would just be noise.
-      ...(playerId ? await originLines(playerId) : await gameOriginLines(gameId)),
+      ...detail,
       '',
       `— ${config.brandName} · ${new Date().toLocaleString('en-IN', { timeZone: config.timezone })}`,
     ].join('\n');
@@ -302,14 +421,16 @@ export async function notify(key, { title, lines = [], playerId = null, gameId =
       [key, subjectFor(key), body, playerId, gameId],
     );
 
-    if (mode === 'instant') await sendOne(rows[0].id, key, subjectFor(key), body);
+    if (mode === 'instant') {
+      await sendOne(rows[0].id, key, subjectFor(key), body, renderAlert(key, heading, detail));
+    }
   } catch (err) {
     log.warn('could not queue alert', { key, message: err.message });
   }
 }
 
-async function sendOne(id, key, subject, body) {
-  const result = await sendMail({ to: config.alerts.recipient, subject, text: body });
+async function sendOne(id, key, subject, body, html) {
+  const result = await sendMail({ to: config.alerts.recipient, subject, text: body, html });
   await query('UPDATE notification_queue SET sent_at = now() WHERE id = $1', [id]);
   await query(
     `INSERT INTO notification_log (kind, subject, recipient, event_count, ok, error)
@@ -353,7 +474,12 @@ export async function sendDigest({ force = false } = {}) {
   parts.push(`— ${config.brandName} · ${new Date().toLocaleString('en-IN', { timeZone: config.timezone })}`);
 
   const subject = `📬 ${config.brandName} — ${rows.length} update${rows.length === 1 ? '' : 's'}`;
-  const result = await sendMail({ to: config.alerts.recipient, subject, text: parts.join('\n') });
+  const result = await sendMail({
+    to: config.alerts.recipient,
+    subject,
+    text: parts.join('\n'),
+    html: renderDigest(groups, rows.length),
+  });
 
   await query(
     'UPDATE notification_queue SET sent_at = now() WHERE id = ANY($1)',
