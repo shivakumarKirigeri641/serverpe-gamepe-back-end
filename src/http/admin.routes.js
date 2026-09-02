@@ -335,7 +335,7 @@ export function adminRoutes() {
       geo: geoStatus(),
       consent: await data.consentStats(),
       sessions: await listSessions(),
-      queues: { tables },
+      queues: await data.queueStats(),
     });
   }));
 
@@ -347,7 +347,12 @@ export function adminRoutes() {
     ok(res, {
       ...report,
       daysRemaining: state.days_left,
-      endsOn: state.free_trial_ends_at,
+      // Rendered straight into a sentence by the panel, so it is formatted
+      // here rather than shipped as a raw ISO timestamp.
+      endsOn: new Date(state.free_trial_ends_at).toLocaleDateString('en-IN', {
+        day: 'numeric', month: 'long', year: 'numeric', timeZone: config.timezone,
+      }),
+      endsAt: state.free_trial_ends_at,
       isOver: !state.active,
       monetizationEnabled: state.monetization_enabled,
     });
@@ -437,12 +442,7 @@ export function adminRoutes() {
   router.get('/legal/documents', wrap(async (_q, res) =>
     ok(res, data.legalDocuments(config, POLICY_VERSION))));
 
-  router.get('/queues', wrap(async (_req, res) => {
-    const { rows } = await query(`
-      SELECT relname AS table, n_live_tup::int AS rows
-        FROM pg_stat_user_tables ORDER BY n_live_tup DESC`);
-    ok(res, { tables: rows });
-  }));
+  router.get('/queues', wrap(async (_q, res) => ok(res, await data.queueStats())));
 
   /**
    * Two very different operations behind one button:
@@ -454,22 +454,38 @@ export function adminRoutes() {
    * The full wipe needs the exact confirmation phrase. A destructive action
    * that fires on a single flag is one mis-click from erasing everything.
    */
+  /** What a cleanup would delete. The panel shows this before asking. */
+  router.get('/maintenance/purge', wrap(async (_q, res) => ok(res, await data.wipePreview())));
+
   router.post('/maintenance/purge', wrap(async (req, res) => {
-    if (req.body?.scope === 'all') {
-      const PHRASE = 'DELETE ALL GAME DATA';
-      if (req.body?.confirm !== PHRASE) {
+    // The panel's own confirmation phrase. Anything else - including a missing
+    // one - is refused: this erases every player and game on the platform.
+    if (req.body?.confirm !== undefined || req.body?.scope === 'all') {
+      if (req.body?.confirm !== data.PURGE_PHRASE) {
         return res.status(400).json({
-          error: `To wipe everything, send confirm: "${PHRASE}"`,
-          protected: data.PROTECTED_TABLES,
+          error: `Type "${data.PURGE_PHRASE}" exactly to confirm`,
+          keptTables: data.PROTECTED_TABLES,
         });
       }
+
+      const before = await data.wipePreview();
       const result = await data.wipeGameData();
-      log.warn('FULL DATA WIPE', { by: req.admin?.label, ip: requestInfo(req).ip });
+      const rowsDeleted = Object.values(result.deleted).reduce((a, b) => a + b, 0);
+
+      log.warn('FULL DATA WIPE', {
+        by: req.admin?.label, ip: requestInfo(req).ip, rowsDeleted,
+      });
+
       return ok(res, {
-        scope: 'all',
+        rowsDeleted,
+        tablesCleared: Object.keys(result.deleted).length,
+        // No Redis and no job queue in this build - the draw scheduler polls
+        // Postgres. Reported as zero so the panel's summary reads correctly.
+        redisKeysDeleted: 0,
+        drawJobsDropped: 0,
+        keptTables: result.kept,
         deleted: result.deleted,
-        kept: result.kept,
-        total: Object.values(result.deleted).reduce((a, b) => a + b, 0),
+        totalBefore: before.totalRows,
       });
     }
 

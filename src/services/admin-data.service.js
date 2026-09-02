@@ -882,15 +882,36 @@ export async function trialReport({ days = 30 } = {}) {
  * is read-only against it until there is a reason to make it editable.
  */
 export function businessProfile(config) {
+  const b = config.business;
+
+  // `address` is always an OBJECT, never null. The marketing site reads
+  // business.address.line1 directly to build its footer and its JSON-LD, and a
+  // null here crashed the whole homepage. Empty strings render as nothing,
+  // which is the honest result when the details have not been filled in.
   return {
-    legal_name: 'ServerPe App Solutions',
+    // snake_case for the admin panel, camelCase for the public site: both read
+    // this same object, and neither should have to translate.
+    legal_name: b.legalName,
+    legalName: b.legalName,
     brand_name: config.brandName,
+    brandName: config.brandName,
     whatsapp_number: config.whatsapp.businessNumber,
-    support_email: null,
-    gst_number: null,
-    address: null,
-    place_of_supply: null,
+    whatsappNumber: config.whatsapp.businessNumber,
+    support_email: b.supportEmail,
+    supportEmail: b.supportEmail,
+    email: b.supportEmail,
+    gst_number: b.gstin,
+    gstin: b.gstin,
+    place_of_supply: b.placeOfSupply,
     timezone: config.timezone,
+    address: {
+      line1: b.address.line1,
+      line2: b.address.line2,
+      city: b.address.city,
+      state: b.address.state,
+      postalCode: b.address.postalCode,
+      country: b.address.country,
+    },
   };
 }
 
@@ -955,6 +976,51 @@ export async function blockHistory(waId) {
     [waId],
   );
   return { rows };
+}
+
+/**
+ * The "queues" panel.
+ *
+ * There is no Redis and no job server in this build - the draw scheduler polls
+ * Postgres with FOR UPDATE SKIP LOCKED. So rather than reporting an empty
+ * queue that does not exist, this reports the real equivalents: what the
+ * scheduler is about to do, and how outbound messages actually went.
+ *
+ * Shape matters: the panel renders { group: { label: number } }, and every
+ * value has to be a plain number or it prints NaN.
+ */
+export async function queueStats() {
+  const { rows } = await query(`
+    SELECT
+      (SELECT count(*)::int FROM games WHERE status='running')                       AS running,
+      (SELECT count(*)::int FROM games
+        WHERE status='running' AND next_draw_at <= now())                            AS due_now,
+      (SELECT count(*)::int FROM games WHERE status='lobby')                         AS waiting_to_start,
+      (SELECT count(*)::int FROM draws WHERE drawn_at > now() - interval '1 hour')    AS drawn_last_hour,
+
+      (SELECT count(*)::int FROM messages WHERE direction='out' AND status='sent')    AS sent,
+      (SELECT count(*)::int FROM messages WHERE direction='out' AND status='failed')  AS failed,
+      (SELECT count(*)::int FROM messages WHERE direction='out' AND status='blocked') AS blocked,
+      (SELECT count(*)::int FROM messages WHERE direction='out' AND status IS NULL)   AS unknown,
+
+      (SELECT count(*)::int FROM processed_messages)                                  AS seen,
+      (SELECT count(*)::int FROM processed_messages
+        WHERE received_at > now() - interval '1 hour')                                AS last_hour
+  `);
+  const r = rows[0];
+
+  return {
+    draws: {
+      running: r.running,
+      due_now: r.due_now,
+      waiting_to_start: r.waiting_to_start,
+      drawn_last_hour: r.drawn_last_hour,
+    },
+    messages: {
+      sent: r.sent, failed: r.failed, blocked: r.blocked, unknown: r.unknown,
+    },
+    webhooks: { seen: r.seen, last_hour: r.last_hour },
+  };
 }
 
 // ─── Operations health ─────────────────────────────────────────────────────
@@ -1106,8 +1172,41 @@ const WIPE_ORDER = [
 ];
 
 export const PROTECTED_TABLES = [
-  'blocked_numbers', 'block_history', 'admin_sessions', 'admin_login_attempts',
+  'blocked_numbers', 'block_history', 'admin_sessions', 'admin_login_attempts', 'app_settings',
 ];
+
+/** The exact words an operator must type. Matches the panel's own constant. */
+export const PURGE_PHRASE = 'DELETE ALL PLAYER DATA';
+
+/**
+ * What a cleanup would delete, before doing it.
+ *
+ * Counted live rather than estimated: an operator about to erase everything
+ * deserves the real number, not an approximation.
+ */
+export async function wipePreview() {
+  const counts = async (tables) => {
+    const out = [];
+    for (const table of tables) {
+      const { rows } = await query(`SELECT count(*)::int AS n FROM ${table}`);
+      out.push({ table, rows: rows[0].n });
+    }
+    return out;
+  };
+
+  const wipe = await counts(WIPE_ORDER);
+  const keep = await counts(PROTECTED_TABLES);
+
+  return {
+    wipe,
+    keep,
+    totalRows: wipe.reduce((a, t) => a + t.rows, 0),
+    // No Redis in this build - the scheduler runs on Postgres SKIP LOCKED.
+    // Reported as zero rather than omitted, so the panel renders honestly.
+    redisKeys: 0,
+    phrase: PURGE_PHRASE,
+  };
+}
 
 /**
  * Empties every game table. Irreversible, so the caller must ask for it

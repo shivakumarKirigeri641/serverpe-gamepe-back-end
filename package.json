@@ -8,8 +8,10 @@
     "node": ">=20"
   },
   "scripts": {
+    "setup": "node src/db/setup.js",
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
+    "db:setup": "node src/db/setup.js",
     "db:reset": "node src/db/reset.js",
     "test": "node --test"
   },

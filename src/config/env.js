@@ -106,6 +106,26 @@ export const config = {
     corsOrigins: list('ADMIN_CORS_ORIGINS'),
   },
 
+  /**
+   * The legal entity behind the brand, shown in the marketing site footer and
+   * its structured data. Left blank rather than invented - an address on a
+   * public site has to be the real one.
+   */
+  business: {
+    legalName: optional('BUSINESS_LEGAL_NAME', 'ServerPe App Solutions'),
+    supportEmail: optional('SUPPORT_EMAIL', ''),
+    gstin: optional('BUSINESS_GSTIN', ''),
+    placeOfSupply: optional('BUSINESS_PLACE_OF_SUPPLY', ''),
+    address: {
+      line1: optional('BUSINESS_ADDRESS_LINE1', ''),
+      line2: optional('BUSINESS_ADDRESS_LINE2', ''),
+      city: optional('BUSINESS_CITY', ''),
+      state: optional('BUSINESS_STATE', ''),
+      postalCode: optional('BUSINESS_POSTAL_CODE', ''),
+      country: optional('BUSINESS_COUNTRY', 'India'),
+    },
+  },
+
   geo: {
     // Server-side IP lookup only - players are never asked for permission.
     enabled: optional('GEO_LOOKUP_ENABLED', 'false') === 'true',
