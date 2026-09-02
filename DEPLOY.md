@@ -31,6 +31,48 @@ Everything else has a working default.
 `npm run setup` warns about each of these if it is missing or looks wrong, so
 run it and read the last section of its output.
 
+`.env.example` lists **every** key the server reads, generated from the running
+configuration so the two cannot drift. A blank value means you have to supply
+it; anything already filled in is a working default worth keeping.
+
+### Also worth setting before launch
+
+Not required to boot, but each one is silently wrong if left empty.
+
+| Key | What happens if you skip it |
+|---|---|
+| `SITE_BASE_URL` | Policy links fall back to this API's own copy. Meta and Razorpay expect them on your own domain — set `https://mastipe.in` |
+| `ADMIN_PANEL_URL` | Alert emails lose their "Open the admin panel" button. Harmless, but you will want it |
+| `MAIL_HOST` `MAIL_USER` `MAIL_PASSWORD` | No operator alerts, no daily summary, no copy of support tickets. Mail is logged instead of sent |
+| `ALERT_RECIPIENT` | Where those alerts go. Falls back to `ADMINMAIL` |
+| `MAIL_FROM_NAME` | The bold name in the inbox. Defaults to `ServerPe App Solutions` |
+| `SUPPORT_EMAIL` | The reply-to on support mail |
+| `APP_TIMEZONE` | Defaults to `Asia/Kolkata`, and is **pinned onto every database connection** — so timestamps read the same here as they do on a server whose Postgres defaults to UTC |
+
+---
+
+## The demo videos
+
+Four files live in `src/media/` and are served at
+`<API_BASE_PATH>/public/media/`:
+
+```
+mastipe-demo.mp4          mastipe-demo-cover.png       # English
+mastipe-demo-hi.mp4       mastipe-demo-hi-cover.png    # Hindi
+```
+
+They are deployed by hand — copy them into `src/media/` alongside the code.
+Nothing references them by any other path, and both the how-to-play page and
+the marketing site read them from here, so there is one copy rather than two
+that drift.
+
+If a file is missing the page still renders: the `<video>` shows its poster and
+plays nothing, and the request returns a clean 404 rather than a 500.
+
+The marketing site points at **this** server for them, so its `VITE_API_BASE`
+must be set in production — otherwise it will look for the videos on its own
+origin and find nothing.
+
 ---
 
 ## Connecting WhatsApp
@@ -82,6 +124,15 @@ cd ../serverpe-gamepe-front-end       && npm install && npm run dev   # :5175
 For production build them (`npm run build`) and serve `dist/` from any static
 host, with `VITE_API_BASE` set to this server's origin and
 `ADMIN_CORS_ORIGINS` here listing the panel's origin.
+
+`VITE_API_BASE` is not optional for the marketing site: the demo videos, the
+policies and the testimonials all come from this server, and with it unset the
+site asks its own origin for them and quietly shows nothing.
+
+Both configs read the target through Vite's `loadEnv`, not `process.env` —
+Vite does not populate `process.env` when evaluating a config file, so the
+fallback wins silently and the panel talks to the wrong back-end. Both print
+their target on startup; read that line.
 
 ---
 

@@ -148,6 +148,25 @@ async function main() {
     warnings.push('BOARD_LINK_SECRET is the default — set a long random value before going live');
   }
 
+  // Mail is the quietest thing to get wrong: nothing fails, no error appears,
+  // and the first sign of trouble is noticing weeks later that no support
+  // ticket ever reached the inbox.
+  if (!config.mail.host || !config.mail.user) {
+    info('mail is not configured — alerts, the daily summary and support copies are logged, not sent');
+  } else {
+    ok(`mail via ${config.mail.host} as "${config.mail.fromName}"`);
+    if (!config.alerts.recipient) {
+      warnings.push('ALERT_RECIPIENT (or ADMINMAIL) is unset — operator alerts have nowhere to go');
+    } else {
+      info(`operator alerts to ${config.alerts.recipient}`);
+    }
+  }
+
+  // Policies on the API's own host are accepted by nobody's compliance review.
+  if (!config.siteBaseUrl) {
+    info('SITE_BASE_URL is unset — policy links point at this API rather than your own domain');
+  }
+
   for (const w of warnings) console.log(`      ${red('!')} ${w}`);
 
   // ---- next steps --------------------------------------------------------
