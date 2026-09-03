@@ -19,6 +19,9 @@ import { formsRoutes } from './forms.routes.js';
 /** src/media, resolved from this file so the cwd cannot change the answer. */
 const mediaDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'media');
 
+/** src/images - the brand set: favicons, icons, wordmarks, social cards. */
+const imagesDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'images');
+
 export function createApp() {
   const app = express();
 
@@ -113,6 +116,18 @@ export function createApp() {
       // is broken when the truth is only that a video was renamed.
       fallthrough: true,
     }),
+  );
+
+  /**
+   * The brand images.
+   *
+   * Cached hard: a favicon is requested on every page load and these files
+   * change roughly never. A year is safe because replacing a logo means
+   * replacing the file, and ETag still forces a revalidation when it does.
+   */
+  api.use(
+    '/public/images',
+    express.static(imagesDir, { maxAge: '365d', index: false, dotfiles: 'deny', fallthrough: true }),
   );
 
   api.use(publicRoutes());

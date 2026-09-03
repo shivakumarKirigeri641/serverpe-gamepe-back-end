@@ -26,6 +26,9 @@ const ok = (res, data, seconds = 60) => {
   res.json({ data });
 };
 
+/** An absolute URL for one brand image. */
+const img = (file) => `${config.publicRoot}/public/images/${file}`;
+
 export function publicRoutes() {
   const router = Router();
 
@@ -42,13 +45,33 @@ export function publicRoutes() {
     whatsapp_number: config.whatsapp.businessNumber,
     public_base_url: config.publicRoot,
     policies_url: config.policiesUrl,
-    // The site falls back to a text wordmark when these are null, which is
-    // honest: there is no committed logo set yet.
+    /**
+     * The brand set, served from src/images.
+     *
+     * Absolute URLs, not paths: the marketing site and the admin panel run on
+     * different origins to this API, so "/public/images/..." would resolve
+     * against their own host and 404. Both front ends fall back to a text
+     * wordmark when a slot is null, so a missing file degrades rather than
+     * breaks the page.
+     */
     primary: {
-      icon: null, iconLarge: null, favicon: null, appleTouchIcon: null,
-      maskable: null, wordmark: null, wordmarkLight: null,
-      mark: null, markLight: null, feature: null,
-      openGraph: null, twitter: null, whatsappProfile: null, emailSignature: null,
+      favicon: img('favicon-32.png'),
+      faviconSmall: img('favicon-16.png'),
+      appleTouchIcon: img('apple-touch-icon-180.png'),
+      icon: img('icon-192.png'),
+      iconLarge: img('icon-512.png'),
+      maskable: img('icon-maskable-512.png'),
+
+      wordmark: img('logo-horizontal.svg'),
+      wordmarkLight: img('logo-horizontal-light-1000.png'),
+      mark: img('logo-mark.svg'),
+      markLight: img('mark-white-512.png'),
+
+      feature: img('play-feature-1024x500.png'),
+      openGraph: img('og-1200x630.png'),
+      twitter: img('twitter-1200x600.png'),
+      whatsappProfile: img('whatsapp-profile-640.png'),
+      emailSignature: img('logo-email-300.png'),
     },
     assets: [],
   }, 300));
