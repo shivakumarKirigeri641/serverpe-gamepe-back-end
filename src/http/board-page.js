@@ -379,21 +379,38 @@ details.called[open] summary::after{transform:rotate(180deg)}
   border-top:1px solid var(--line);padding:8px 10px calc(8px + env(safe-area-inset-bottom));
   backdrop-filter:blur(8px);
 }
-.claims .row{display:flex;gap:6px;overflow-x:auto;max-width:520px;margin:0 auto;scrollbar-width:none}
-.claims .row::-webkit-scrollbar{display:none}
-.claims button{
-  flex:none;padding:9px 12px;border-radius:9px;border:1px solid var(--line);
-  background:var(--panel);color:var(--dim);font:600 13px system-ui;cursor:pointer;white-space:nowrap;
+/* A fixed grid, never a scroller.
+   Six prizes used to sit in a horizontal scroller, which meant Full House -
+   the one everybody is playing for - was off-screen on a phone until you
+   thought to swipe a bar you had no reason to think was swipeable. Three
+   across, two down, every cell exactly one third: the layout cannot move,
+   whatever the buttons say. */
+.claims .row{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:6px;
+  max-width:520px;margin:0 auto;
 }
-/* A prize you can now claim glows. This is deliberate, and it is deliberately
-   NOT the same as hinting a number.
-   The board never says whether the number being called is on your ticket -
-   spotting that is the game. Whether a completed pattern is worth a prize is
-   bookkeeping, and a player who has genuinely won Top Line should not lose it
-   because they did not know the rule. Marking is skill; claiming is not. */
-.claims button.able{border-color:var(--gold);color:var(--gold);
-  animation:glow 1.6s ease-in-out infinite}
-@keyframes glow{0%,100%{box-shadow:0 0 0 0 rgba(212,165,55,.35)}50%{box-shadow:0 0 0 6px rgba(212,165,55,0)}}
+@media (min-width:560px){
+  /* Room for one row once the screen allows it, still six equal cells. */
+  .claims .row{grid-template-columns:repeat(6,1fr)}
+}
+.claims button{
+  min-width:0;                 /* lets a grid cell shrink instead of overflowing */
+  padding:9px 6px;border-radius:9px;border:1px solid var(--line);
+  background:var(--panel);color:var(--dim);font:600 12.5px system-ui;cursor:pointer;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  transition:background .15s,border-color .15s,color .15s;
+}
+
+/* Deliberately NO styling for "you could claim this now".
+   Spotting a completed line is the game. The board withholds whether a called
+   number is on your ticket, and lighting up the prize would give away the same
+   thing one step later - it would announce a finished line to somebody who had
+   not found it. Every button stays tappable at all times; a claim that is not
+   valid yet is simply refused, which costs nothing. */
+
+/* Won by somebody else. Struck through, and the name is NOT appended: doing so
+   changed the button's width mid-game and shifted every other button under the
+   player's thumb. The winner is in the results and in the toast. */
 .claims button.gone{opacity:.4;text-decoration:line-through;cursor:default}
 .claims button.mine{background:var(--gold);color:#2b2118;border-color:var(--gold);text-decoration:none}
 
@@ -1321,9 +1338,7 @@ details.called[open] summary::after{transform:rotate(180deg)}
 
       // Only "I have it" unlocks the hint. Saying a number is not yours cannot
       // be what completes a line, so it earns nothing.
-      refreshClaims().then(function(){
-        if (a === 'yes') { unlockClaimHints(); renderClaims(); }
-      });
+      refreshClaims();
     });
   }
 
@@ -1363,39 +1378,20 @@ details.called[open] summary::after{transform:rotate(180deg)}
   }
 
   // ---- claims ----
-  /**
-   * Prizes whose glow this player has earned the right to see.
-   *
-   * Eligibility comes from the numbers actually CALLED, so without this the
-   * board would light a prize up the instant the last number of a line was
-   * drawn - before the player had looked at their ticket. That is the same
-   * hint the ticket itself deliberately withholds: it would announce "you have
-   * a completed line" to somebody who had not yet found it.
-   *
-   * So the glow is unlocked only when they mark the number, and once unlocked
-   * it stays. Losing it on the next draw would be worse than never showing it:
-   * a prize they had earned would vanish before they could tap it.
-   */
-  var claimHintUnlocked = {};
-
-  function unlockClaimHints(){
-    if (!state || !state.prizes) return;
-    state.prizes.forEach(function(p){
-      if (p.eligible && !p.awarded) claimHintUnlocked[p.key] = true;
-    });
-  }
-
   function renderClaims(){
     if (!state.prizes) return;
     claimrow.innerHTML = state.prizes.map(function(p){
-      // Eligible but not yet unlocked: the button still works, it simply does
-      // not advertise itself. A player who spots the line themselves can claim
-      // it at any time.
-      var able = p.eligible && claimHintUnlocked[p.key];
-      var cls = p.awarded ? (p.awarded.isYou ? 'mine' : 'gone') : (able ? 'able' : '');
-      var label = p.awarded ? p.label + ' · ' + p.awarded.winner : p.label;
+      // No 'able' state at all - see the note in the stylesheet. The button
+      // looks the same whether or not the prize is available, so the board
+      // never does the player's looking for them.
+      var cls = p.awarded ? (p.awarded.isYou ? 'mine' : 'gone') : '';
+      // The label never changes width. Appending the winner's name grew the
+      // button and shifted the others sideways mid-game, which moved a target
+      // out from under a thumb that was already reaching for it.
+      var title = p.awarded ? p.label + ' - won by ' + p.awarded.winner : p.label;
       return '<button data-k="' + p.key + '" class="' + cls + '"' +
-        (p.awarded ? ' disabled' : '') + '>' + esc(label) + '</button>';
+        ' title="' + esc(title) + '"' +
+        (p.awarded ? ' disabled' : '') + '>' + esc(p.label) + '</button>';
     }).join('');
 
     claimrow.querySelectorAll('button[data-k]').forEach(function(b){
