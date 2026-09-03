@@ -193,6 +193,54 @@ function canonicalType(declared) {
 }
 
 /**
+ * Changes a column's type, clearing what would otherwise block it.
+ *
+ * A bare `ALTER COLUMN ... TYPE` fails whenever anything else is defined
+ * against the old type. Changing an integer `version` to text hit exactly
+ * that: "operator does not exist: text >= integer", because a
+ * `CHECK (version >= 1)` was still being validated against the new type. The
+ * default is the same story — `DEFAULT 1` is an integer expression.
+ *
+ * So the dependants go first:
+ *
+ *   1. Drop the default. It can be restored afterwards if it is still wanted;
+ *      leaving it in place guarantees the ALTER fails.
+ *   2. Drop CHECK constraints that mention the column. Found by name at run
+ *      time rather than hardcoded, because their names differ between
+ *      databases — Postgres generates them, and an older schema's are not the
+ *      ones this schema would produce.
+ *   3. Change the type.
+ *
+ * Anything dropped here that the current schema still wants is recreated when
+ * that schema is next applied. Nothing is dropped that the column does not own.
+ */
+function changeTypeSql(table, name, fromType, toType) {
+  return [
+    `-- ${table}.${name} is ${fromType} here and ${toType} in schema.sql.`,
+    `-- Dependants are cleared first: a CHECK or DEFAULT built for the old type`,
+    `-- makes the type change fail outright.`,
+    `ALTER TABLE ${table} ALTER COLUMN ${name} DROP DEFAULT;`,
+    `DO $$`,
+    `DECLARE c record;`,
+    `BEGIN`,
+    `  FOR c IN`,
+    `    SELECT con.conname`,
+    `      FROM pg_constraint con`,
+    `      JOIN pg_class rel ON rel.oid = con.conrelid`,
+    `      JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = ANY (con.conkey)`,
+    `     WHERE rel.relname = '${table}'`,
+    `       AND att.attname = '${name}'`,
+    `       AND con.contype = 'c'`,
+    `  LOOP`,
+    `    EXECUTE format('ALTER TABLE ${table} DROP CONSTRAINT %I', c.conname);`,
+    `  END LOOP;`,
+    `END $$;`,
+    `-- USING converts the existing rows; check the result before trusting it.`,
+    `ALTER TABLE ${table} ALTER COLUMN ${name} TYPE ${toType} USING ${name}::${toType};`,
+  ].join('\n');
+}
+
+/**
  * Turns a schema.sql column definition into an ALTER that will actually apply.
  *
  * Two adjustments matter on a table that already has rows:
@@ -312,11 +360,7 @@ async function main() {
             `  ${red('wrong type')} ${table}.${name}  ` +
             `${dim(`is ${l.type}, schema says ${wantType}`)}`,
           );
-          fixes.push(
-            `-- ${table}.${name} is ${l.type} here and ${wantType} in schema.sql.\n` +
-            `-- USING converts the existing rows; check the result before trusting it.\n` +
-            `ALTER TABLE ${table} ALTER COLUMN ${name} TYPE ${wantType} USING ${name}::${wantType};`,
-          );
+          fixes.push(changeTypeSql(table, name, l.type, wantType));
         }
       }
     }
