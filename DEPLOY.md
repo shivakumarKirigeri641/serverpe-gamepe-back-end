@@ -136,6 +136,56 @@ their target on startup; read that line.
 
 ---
 
+## SEO and analytics on the marketing site
+
+Social preview tags are **static in `index.html`**, not only in
+react-helmet-async. That is not duplication: WhatsApp, Facebook, LinkedIn and
+Slack fetch the raw HTML and never execute JavaScript, so tags added by React
+are invisible to them. With them only in React a link pasted into a WhatsApp
+group rendered as bare text with no card — on a product whose growth loop is
+exactly that link being pasted into groups. Helmet still overrides them at
+runtime, which keeps the Hindi variant right for anything that does run JS.
+
+The og:image is served by **this** API from `src/media`, so there is one
+image rather than a second copy on the site to keep in step. It must be
+publicly reachable for a preview to render — if `api.mastipe.in` is behind
+auth or down, the card appears without an image.
+
+### Google Tag Manager
+
+Set `VITE_GTM_ID` in the marketing site's environment **at build time** —
+Vite bakes it in, so changing it later needs a rebuild, not a restart.
+
+```bash
+VITE_GTM_ID=GTM-XXXXXXX npm run build
+```
+
+Leave it unset and nothing loads at all: the snippet checks whether the
+placeholder was substituted and returns early if not, so a development build
+or a deploy that forgot the variable makes no request rather than asking for
+a container literally named `%VITE_GTM_ID%`.
+
+Before switching it on, check that whatever GTM loads is covered by the
+privacy policy — analytics and advertising tags set cookies, and the policy
+currently describes what the game stores, not what a tag manager might.
+
+## Running it under pm2
+
+```bash
+pm2 start ecosystem.config.cjs
+pm2 save && pm2 startup      # survive a reboot
+pm2 logs mastipe-api
+```
+
+The config is committed on purpose. A hand-written pm2 entry is how a
+deployment ended up pointing at `dist/index.js`, a path that has never
+existed here — **there is no build step**, and `src/index.js` is the program.
+
+`instances: 1` in that file is a correctness constraint, not a capacity
+choice. Live board updates live in one process's memory, so cluster mode
+would leave most of a table watching a board that stopped moving. See the
+last section of this document.
+
 ## Every command
 
 | Command | Does |

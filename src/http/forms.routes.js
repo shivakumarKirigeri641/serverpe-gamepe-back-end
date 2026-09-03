@@ -11,6 +11,7 @@ import { config } from '../config/env.js';
 import { log } from '../utils/logger.js';
 import { verifyBoardToken } from '../utils/code.js';
 import { demoPage } from './demo-page.js';
+import { rateLimit } from './rate-limit.js';
 import { feedbackPage, supportPage } from './forms-page.js';
 import { getPlayerById, displayNameFor } from '../services/player.service.js';
 import { getGameById } from '../services/game.service.js';
@@ -31,6 +32,10 @@ function maskNumber(waId) {
 }
 
 export function formsRoutes() {
+  // Only the two public write endpoints. Nothing in a running game is
+  // limited - see the note at the top of rate-limit.js.
+  const formLimit = rateLimit({ max: 8, windowMs: 60_000, name: 'public form' });
+
   const router = Router();
 
   /** How to play. Public — it is also the website's Demo link. */
@@ -69,7 +74,7 @@ export function formsRoutes() {
     }));
   }));
 
-  router.post('/feedback/:token', resolvePlayer, wrap(async (req, res) => {
+  router.post('/feedback/:token', formLimit, resolvePlayer, wrap(async (req, res) => {
     const rating = Number(req.body?.rating);
     const comment = String(req.body?.comment ?? '').trim();
 
@@ -105,7 +110,7 @@ export function formsRoutes() {
     }));
   }));
 
-  router.post('/support/:token', resolvePlayer, wrap(async (req, res) => {
+  router.post('/support/:token', formLimit, resolvePlayer, wrap(async (req, res) => {
     const message = String(req.body?.message ?? '').trim();
     const name = String(req.body?.name ?? '').trim() || displayNameFor(req.player);
     const email = String(req.body?.email ?? '').trim();

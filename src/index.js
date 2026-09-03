@@ -59,7 +59,22 @@ async function main() {
   installCrashGuards();
   await assertConnection();
   await loadSettings();
-  await ensureTriggers();
+
+  // Seeding the alert triggers must not be able to stop the platform.
+  //
+  // It did once: a database created from an older schema still had a NOT NULL
+  // column this insert does not fill, so a failure in the *email alerts* setup
+  // took the whole server down at boot and no game could be played. Alerts are
+  // worth having and they are not worth that. The error is loud, and the games
+  // carry on.
+  try {
+    await ensureTriggers();
+  } catch (err) {
+    log.error('could not seed alert triggers — alerts may not work until this is fixed', {
+      message: err.message,
+      hint: 'usually schema drift: compare notification_settings against src/db/schema.sql',
+    });
+  }
 
   // Batched alerts go out on their own clock. Unref'd so it never holds the
   // process open on shutdown.
