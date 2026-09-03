@@ -250,7 +250,7 @@ const JS = `
         '<div class="bub in">How many players will be joining, including you?</div>' +
         '<div class="bub out">4</div>' +
         '<div class="bub in">Your game room is ready! 🎉<br><b>Game code: MP4K9T</b><br>' +
-          'Share this link with your players.' +
+          'The link to share is waiting inside your game room.' +
           '<div class="btnrow"><span class="chip">Open game room</span></div></div>' +
       '</div>';
     },

@@ -78,12 +78,21 @@ export const copy = {
     `*Free Trial* - unlimited games, no charge, until ${trialEndsOn()}.\n\n` +
     `Tap below to create your game room.`,
 
-  gameCreated: (code, invite) =>
+  /**
+   * The invite link is deliberately NOT in this message.
+   *
+   * It used to be, and it appeared twice: once here as raw text, and again in
+   * the game room with a Copy button beside it. The raw one was the worse of
+   * the two — a long wa.me URL wrapping across a chat bubble, easy to
+   * half-select when copying, and sitting above the button the host needs to
+   * press anyway. One link, in one place, with one tap to copy it.
+   */
+  gameCreated: (code) =>
     `Your game room is ready! 🎉\n\n` +
     `*Game code: ${code}*\n\n` +
-    `Share this link with your players:\n${invite}\n\n` +
-    `They tap it, accept the terms, and they're in. ` +
-    `Open your host screen below to watch them arrive and start the game.`,
+    `Open your game room below. The link to share with your players is waiting ` +
+    `inside, with a button to copy it — paste that into your WhatsApp group and ` +
+    `they're in.`,
 
   askJoinCode: () =>
     `What's the game code?\n\n` +

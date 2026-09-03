@@ -11,7 +11,7 @@
 import { config } from '../config/env.js';
 import { query } from '../db/pool.js';
 import { log } from '../utils/logger.js';
-import { boardUrl, inviteUrl, looksLikeRoomCode, normaliseRoomCode } from '../utils/code.js';
+import { boardUrl, looksLikeRoomCode, normaliseRoomCode } from '../utils/code.js';
 import { sendText, sendButtons, sendCtaUrl, sendList } from '../whatsapp/client.js';
 import {
   copy, BUTTONS, OPTIONS, menuButtons, consentButtons, planButtons, optionsList,
@@ -261,8 +261,7 @@ async function createRoom(player, state) {
   const hostIsNew = !hostPlayedBefore;
   await sendText(
     player.wa_id,
-    copy.gameCreated(game.code, inviteUrl(game.code)) +
-      (hostIsNew ? copy.demoTip(config.demoUrl) : ''),
+    copy.gameCreated(game.code) + (hostIsNew ? copy.demoTip(config.demoUrl) : ''),
   );
   return sendCtaUrl(player.wa_id, copy.hostStartWarning(), {
     displayText: 'Open game room',
