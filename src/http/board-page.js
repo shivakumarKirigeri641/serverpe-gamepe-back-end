@@ -39,7 +39,14 @@ body{
 /* ---- header ---- */
 header{display:flex;align-items:center;gap:10px;padding:6px 2px 12px}
 .brand{font-weight:700;letter-spacing:.02em;color:var(--gold)}
-.code{margin-left:auto;font:600 13px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+/* Sound is on by default but must be one tap away from off: this is played in
+   living rooms, on speakerphone, next to someone watching television. */
+.mute{
+  margin-left:auto;background:none;border:1px solid var(--line);border-radius:8px;
+  color:var(--text);font-size:13px;line-height:1;padding:6px 8px;cursor:pointer;
+}
+.mute.off{opacity:.45}
+.code{margin-left:8px;font:600 13px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
   background:var(--panel);border:1px solid var(--line);padding:6px 9px;border-radius:7px;letter-spacing:.12em}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}
 .dot.off{background:var(--no)}
@@ -67,15 +74,55 @@ header{display:flex;align-items:center;gap:10px;padding:6px 2px 12px}
 
 /* ---- yes / no ---- */
 .answer{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+/* Tinted from the start, not only once chosen.
+   Two identical grey buttons make the player read both labels every single
+   number. Colour lets them answer by position and glance - and green/red is
+   the one pairing everyone already knows. Kept pale: a saturated pair would
+   compete with the called number, which is the thing they are meant to look
+   at. */
 .answer button{
-  padding:14px 8px;border-radius:12px;border:1px solid var(--line);
-  background:var(--panel);color:var(--text);font:600 15px system-ui;cursor:pointer;
-  transition:transform .08s,background .15s;
+  padding:14px 8px;border-radius:12px;cursor:pointer;
+  border:1px solid transparent;color:var(--text);font:600 15px system-ui;
+  transition:transform .12s cubic-bezier(.2,1.4,.4,1),background .18s,border-color .18s,box-shadow .18s;
 }
-.answer button:active{transform:scale(.97)}
-.answer button.yes.on{background:var(--ok);border-color:var(--ok);color:#fff}
-.answer button.no.on{background:var(--no);border-color:var(--no);color:#fff}
-.answer button[disabled]{opacity:.45;cursor:default}
+.answer button.yes{background:rgba(63,164,106,.16);border-color:rgba(63,164,106,.45)}
+.answer button.no {background:rgba(192,75,75,.14);border-color:rgba(192,75,75,.42)}
+
+/* Waiting for an answer, the pair breathes very slightly. Enough to read as
+   "your turn", far too little to be a distraction over ninety numbers. */
+.answer.awaiting button.yes{animation:breatheYes 2.4s ease-in-out infinite}
+.answer.awaiting button.no {animation:breatheNo  2.4s ease-in-out infinite}
+@keyframes breatheYes{
+  0%,100%{box-shadow:0 0 0 0 rgba(63,164,106,0)}
+  50%    {box-shadow:0 0 0 5px rgba(63,164,106,.10)}
+}
+@keyframes breatheNo{
+  0%,100%{box-shadow:0 0 0 0 rgba(192,75,75,0)}
+  50%    {box-shadow:0 0 0 5px rgba(192,75,75,.09)}
+}
+
+.answer button:active{transform:scale(.95)}
+
+/* The chosen one fills in and gives a single confident pop. The other fades
+   back rather than vanishing, so the pair still reads as a choice that was
+   made rather than a button that disappeared. */
+.answer button.yes.on{background:var(--ok);border-color:var(--ok);color:#fff;animation:chosen .32s cubic-bezier(.2,1.6,.4,1)}
+.answer button.no.on {background:var(--no);border-color:var(--no);color:#fff;animation:chosen .32s cubic-bezier(.2,1.6,.4,1)}
+@keyframes chosen{
+  0%  {transform:scale(.94)}
+  55% {transform:scale(1.06)}
+  100%{transform:scale(1)}
+}
+
+.answer button[disabled]{cursor:default}
+.answer button[disabled]:not(.on){opacity:.4;filter:saturate(.4)}
+
+@media (prefers-reduced-motion: reduce){
+  .answer.awaiting button.yes,
+  .answer.awaiting button.no,
+  .answer button.yes.on,
+  .answer button.no.on{animation:none}
+}
 /* Only ever carries an error ("could not record that"). There is no
    right/wrong styling because the board never tells a player whether their
    answer was correct - that comes at the end of the game. */
@@ -387,6 +434,7 @@ details.called[open] summary::after{transform:rotate(180deg)}
   <header>
     <span class="dot wait" id="conn" title="connecting"></span>
     <span class="brand">${esc(config.brandName)}</span>
+    <button class="mute" id="mute" title="Sound" aria-label="Sound on or off">&#128266;</button>
     <span class="code" id="code">------</span>
   </header>
   <div id="view"><p class="muted">Loading your game…</p></div>
@@ -415,6 +463,128 @@ details.called[open] summary::after{transform:rotate(180deg)}
       method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body||{})
     }).then(function(r){ return r.json().then(function(j){ return {status:r.status, body:j}; }); });
   }
+  // ---- sound ----
+  //
+  // Synthesised, not loaded. The board ships as one file with no external
+  // requests, and two short audio files would be the first thing to break that
+  // - and the first thing to fail on a weak connection, arriving after the
+  // moment they were meant to accompany.
+  //
+  // Everything here is wrapped so that a browser with no Web Audio, or one
+  // that refuses to start it, simply plays nothing. A game must never fail
+  // because a sound could not.
+  var audio = null;
+  var muted = false;
+  try { muted = localStorage.getItem('mastipe.muted') === '1'; } catch (e) {}
+
+  /**
+   * The AudioContext, created on demand.
+   *
+   * Browsers refuse to start one outside a user gesture, and on iOS an
+   * existing context is suspended whenever the page is backgrounded - which
+   * WhatsApp's in-app browser does constantly. So this resumes on every call
+   * rather than assuming the first success holds.
+   */
+  function ac(){
+    if (muted) return null;
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return null;
+      if (!audio) audio = new Ctx();
+      if (audio.state === 'suspended') audio.resume().catch(function(){});
+      return audio;
+    } catch (e) { return null; }
+  }
+
+  /**
+   * One note.
+   *
+   * The envelope matters more than the pitch: a tone that starts and stops
+   * abruptly clicks, which on a phone speaker sounds like a fault rather than
+   * a sound. Ramping up over 12ms and decaying away removes it.
+   */
+  function tone(freq, startAt, durSec, peak, type){
+    var a = ac(); if (!a) return;
+    try {
+      var t0 = a.currentTime + (startAt || 0);
+      var osc = a.createOscillator();
+      var gain = a.createGain();
+      osc.type = type || 'sine';
+      osc.frequency.setValueAtTime(freq, t0);
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.exponentialRampToValueAtTime(peak, t0 + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + durSec);
+      osc.connect(gain); gain.connect(a.destination);
+      osc.start(t0); osc.stop(t0 + durSec + 0.02);
+    } catch (e) {}
+  }
+
+  /** Marking a number you have: two quick rising notes, like a stamp landing. */
+  function soundMark(){
+    tone(660, 0,     0.10, 0.16, 'triangle');
+    tone(990, 0.055, 0.16, 0.13, 'triangle');
+  }
+
+  /** Answering "not on mine": deliberately quieter and lower. Not a failure. */
+  function soundPass(){
+    tone(300, 0, 0.09, 0.05, 'sine');
+  }
+
+  /** One second of the countdown. */
+  function soundTick(){
+    tone(520, 0, 0.07, 0.10, 'square');
+  }
+
+  /** Zero: a short rising fanfare as the first number arrives. */
+  function soundGo(){
+    tone(523.25, 0,    0.18, 0.16, 'triangle');   // C5
+    tone(659.25, 0.10, 0.18, 0.16, 'triangle');   // E5
+    tone(783.99, 0.20, 0.34, 0.18, 'triangle');   // G5
+  }
+
+  /**
+   * The last seconds before the next number.
+   *
+   * Rises as the time runs out - 5 seconds and 1 second should not sound the
+   * same, or the tick carries no information and becomes wallpaper. Kept
+   * quieter than the marking sound: this is a nudge, and it fires up to five
+   * times per number, so anything louder would wear out fast.
+   */
+  function soundUrgent(secondsLeft){
+    var hz = 440 + (5 - Math.min(5, secondsLeft)) * 70;   // 440 → 720
+    tone(hz, 0, 0.05, secondsLeft <= 2 ? 0.09 : 0.06, 'square');
+  }
+
+  /** A prize is won. */
+  function soundWin(){
+    tone(659.25, 0,    0.16, 0.15, 'triangle');
+    tone(783.99, 0.12, 0.16, 0.15, 'triangle');
+    tone(1046.5, 0.24, 0.42, 0.17, 'triangle');
+  }
+
+  function paintMute(){
+    var b = document.getElementById('mute');
+    if (!b) return;
+    b.classList.toggle('off', muted);
+    b.innerHTML = muted ? '&#128263;' : '&#128266;';
+    b.title = muted ? 'Sound off' : 'Sound on';
+  }
+
+  (function wireMute(){
+    var b = document.getElementById('mute');
+    if (!b) return;
+    paintMute();
+    b.onclick = function(){
+      muted = !muted;
+      try { localStorage.setItem('mastipe.muted', muted ? '1' : '0'); } catch (e) {}
+      paintMute();
+      // Tapping the button IS a gesture, so this is the reliable moment to
+      // start the audio context - and the confirmation doubles as a check
+      // that sound actually works on this device.
+      if (!muted) soundMark();
+    };
+  })();
+
   function toast(msg){
     var el = document.createElement('div');
     el.className = 'toast'; el.textContent = msg;
@@ -478,6 +648,7 @@ details.called[open] summary::after{transform:rotate(180deg)}
     es.addEventListener('claim', function(e){
       var c = JSON.parse(e.data);
       toast(c.winner + ' claimed ' + c.label + '!');
+      soundWin();
       refreshClaims();
     });
 
@@ -507,9 +678,11 @@ details.called[open] summary::after{transform:rotate(180deg)}
     var paint = function(){
       if (n > 0) {
         node.textContent = n;
+        soundTick();
         // Re-trigger the animation by removing and re-adding the class.
         node.className = 'n'; void node.offsetWidth; node.className = 'n tick';
       } else {
+        soundGo();
         // Zero: the heartbeat stops, the ring flares, and the numbers start.
         el.classList.add('go-time');
         node.innerHTML = '<span class="go">BINGO!</span>';
@@ -1069,6 +1242,11 @@ details.called[open] summary::after{transform:rotate(180deg)}
     yes.classList.toggle('on', state.yourAnswer === 'yes');
     no.classList.toggle('on', state.yourAnswer === 'no');
 
+    // Breathe only while an answer is actually wanted. Left running after the
+    // tap it would be pulsing at somebody who has already decided.
+    var row = yes.parentNode;
+    if (row) row.classList.toggle('awaiting', Boolean(cur) && !given);
+
     yes.onclick = function(){ answer('yes'); };
     no.onclick  = function(){ answer('no'); };
     paintWaiting();
@@ -1101,7 +1279,13 @@ details.called[open] summary::after{transform:rotate(180deg)}
     answeredSeq = cur.seq;
     var yes = document.getElementById('yes'), no = document.getElementById('no');
     yes.disabled = no.disabled = true;
+    if (yes.parentNode) yes.parentNode.classList.remove('awaiting');
     (a === 'yes' ? yes : no).classList.add('on');
+
+    // Played on the tap, not on the server's reply. The sound is feedback that
+    // the tap registered; waiting for the round trip would put it a variable
+    // fraction of a second late, which reads as lag rather than confirmation.
+    if (a === 'yes') soundMark(); else soundPass();
 
     post('/answer', {seq:cur.seq, answer:a}).then(function(r){
       var n = document.getElementById('nudge');
@@ -1133,7 +1317,13 @@ details.called[open] summary::after{transform:rotate(180deg)}
 
       n.textContent = '';
       n.className = 'nudge';
-      updateTicket(); paintWaiting(); refreshClaims();
+      updateTicket(); paintWaiting();
+
+      // Only "I have it" unlocks the hint. Saying a number is not yours cannot
+      // be what completes a line, so it earns nothing.
+      refreshClaims().then(function(){
+        if (a === 'yes') { unlockClaimHints(); renderClaims(); }
+      });
     });
   }
 
@@ -1150,7 +1340,18 @@ details.called[open] summary::after{transform:rotate(180deg)}
     var left = state.secondsLeft == null ? state.game.drawInterval : state.secondsLeft;
     var total = state.game.drawInterval || 12;
     paint();
-    tick = setInterval(function(){ left = Math.max(0, left - 1); paint(); }, 1000);
+    tick = setInterval(function(){
+      left = Math.max(0, left - 1);
+      paint();
+
+      // The last five seconds are audible.
+      //
+      // Only for a player who has not answered yet: once they have marked the
+      // number, the countdown is no longer about them, and ticking at somebody
+      // who is simply waiting for the next call is nagging rather than urgency.
+      var answered = state.yourAnswer || (state.current && answeredSeq === state.current.seq);
+      if (!answered && left > 0 && left <= 5) soundUrgent(left);
+    }, 1000);
     function paint(){
       var ring = document.getElementById('ring'), t = document.getElementById('ringT');
       if (!ring) return;
@@ -1162,10 +1363,36 @@ details.called[open] summary::after{transform:rotate(180deg)}
   }
 
   // ---- claims ----
+  /**
+   * Prizes whose glow this player has earned the right to see.
+   *
+   * Eligibility comes from the numbers actually CALLED, so without this the
+   * board would light a prize up the instant the last number of a line was
+   * drawn - before the player had looked at their ticket. That is the same
+   * hint the ticket itself deliberately withholds: it would announce "you have
+   * a completed line" to somebody who had not yet found it.
+   *
+   * So the glow is unlocked only when they mark the number, and once unlocked
+   * it stays. Losing it on the next draw would be worse than never showing it:
+   * a prize they had earned would vanish before they could tap it.
+   */
+  var claimHintUnlocked = {};
+
+  function unlockClaimHints(){
+    if (!state || !state.prizes) return;
+    state.prizes.forEach(function(p){
+      if (p.eligible && !p.awarded) claimHintUnlocked[p.key] = true;
+    });
+  }
+
   function renderClaims(){
     if (!state.prizes) return;
     claimrow.innerHTML = state.prizes.map(function(p){
-      var cls = p.awarded ? (p.awarded.isYou ? 'mine' : 'gone') : (p.eligible ? 'able' : '');
+      // Eligible but not yet unlocked: the button still works, it simply does
+      // not advertise itself. A player who spots the line themselves can claim
+      // it at any time.
+      var able = p.eligible && claimHintUnlocked[p.key];
+      var cls = p.awarded ? (p.awarded.isYou ? 'mine' : 'gone') : (able ? 'able' : '');
       var label = p.awarded ? p.label + ' · ' + p.awarded.winner : p.label;
       return '<button data-k="' + p.key + '" class="' + cls + '"' +
         (p.awarded ? ' disabled' : '') + '>' + esc(label) + '</button>';
