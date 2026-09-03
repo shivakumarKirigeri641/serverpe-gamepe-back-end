@@ -26,15 +26,49 @@ import { pool, closePool } from './pool.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
+/** --apply runs the migration instead of only writing it out. */
+const apply = process.argv.includes('--apply');
+
 const green = (s) => `\x1b[32m${s}\x1b[0m`;
 const red = (s) => `\x1b[31m${s}\x1b[0m`;
 const yellow = (s) => `\x1b[33m${s}\x1b[0m`;
 const dim = (s) => `\x1b[90m${s}\x1b[0m`;
 const bold = (s) => `\x1b[1m${s}\x1b[0m`;
 
-/** Pulls `table -> [{ name, notNull }]` out of the schema file. */
+/**
+ * The CREATE TABLE for one table, exactly as written, plus any CREATE INDEX
+ * that follows it for the same table.
+ *
+ * Read from the untouched file rather than the comment-stripped copy the
+ * parser uses, so a migration a human has to review still explains itself.
+ */
+function originalStatement(sql, table) {
+  const re = new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${table}\\s*\\([\\s\\S]*?\\n\\);`, 'i');
+  const m = sql.match(re);
+  if (!m) return null;
+
+  let out = m[0];
+
+  // Indexes for a table are declared immediately after it. Carrying them along
+  // matters: a table created without its indexes works fine on an empty table
+  // and becomes a problem later, under load, with nothing to point at.
+  const onThisTable = new RegExp(`\\bON ${table}\\b`, 'i');
+  for (const line of sql.slice(m.index + m[0].length).split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    if (/^CREATE (UNIQUE )?INDEX/i.test(t) && onThisTable.test(t)) {
+      out += `\n${t}`;
+      continue;
+    }
+    if (t.startsWith('--')) continue;
+    break;   // anything else means we have left this table's block
+  }
+  return out;
+}
+
 function parseSchema(sql) {
   const tables = new Map();
+  const statements = new Map();
 
   // Comments have to go before anything else looks at this text. A prose
   // comment inside a CREATE TABLE contains commas, and splitting on those
@@ -72,9 +106,12 @@ function parseSchema(sql) {
       // as schema.sql declares it, types, defaults, checks and all.
       parsed.push({ name, notNull: /\bNOT\s+NULL\b/i.test(text), sql: text.replace(/\s+/g, ' ') });
     }
+    // The statement itself, so a missing table can be created rather than
+    // triggering a rebuild of the whole database.
     tables.set(table, parsed);
+    statements.set(table, originalStatement(sql, table));
   }
-  return tables;
+  return { tables, statements };
 }
 
 async function liveSchema() {
@@ -121,9 +158,49 @@ function addColumnSql(table, col) {
   ].join('\n');
 }
 
+/**
+ * Runs the generated migration through the app's own connection.
+ *
+ * Exists so a deployment does not need psql installed, and does not need the
+ * database password typed a second time on a command line where it lands in
+ * the shell history. The credentials are the ones already in .env.
+ *
+ * Two safety properties:
+ *
+ *   - One transaction. Every statement lands or none does, so a half-migrated
+ *     schema is not a state this can produce.
+ *   - It refuses to run anything containing <<CHOOSE A VALUE>>. Those appear
+ *     where a NOT NULL column has to be backfilled, and the value is a
+ *     decision about real data. Guessing it is how a migration quietly writes
+ *     the wrong thing into every existing row.
+ */
+async function applyMigration(body, dbName) {
+  if (body.includes('<<CHOOSE A VALUE>>')) {
+    console.log(`\n  ${red('not applied')} — this migration needs values filled in first.`);
+    console.log(`  ${dim('Edit drift-fix.sql, replace every <<CHOOSE A VALUE>>, then re-run.')}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`\n  applying to ${bold(dbName)} …`);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(body);
+    await client.query('COMMIT');
+    console.log(`  ${green('✓')} applied. Restart the server so it picks up the change.\n`);
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.log(`  ${red('failed, nothing changed')}: ${err.message}\n`);
+    process.exitCode = 1;
+  } finally {
+    client.release();
+  }
+}
+
 async function main() {
   const sql = await readFile(join(here, 'schema.sql'), 'utf8');
-  const want = parseSchema(sql);
+  const { tables: want, statements } = parseSchema(sql);
   const have = await liveSchema();
 
   const { rows: [db] } = await pool.query('SELECT current_database() AS name, version()');
@@ -137,7 +214,12 @@ async function main() {
     if (!have.has(table)) {
       problems++;
       console.log(`  ${red('missing table')}  ${table}`);
-      fixes.push(`-- ${table} does not exist. Easiest fix is a rebuild:\n--   npm run db:reset -- --yes   (DESTROYS ALL DATA)`);
+      // A new table is the ordinary case for a release: create it, do not
+      // rebuild the database around it.
+      const create = statements.get(table);
+      fixes.push(create
+        ? `-- ${table} is new in this release.\n${create}`
+        : `-- ${table} is missing and could not be read from schema.sql.`);
       continue;
     }
 
@@ -205,9 +287,16 @@ async function main() {
       'BEGIN;',
       '',
     ].join('\n');
+    const body = [...new Set(fixes)].join('\n\n');
     await import('node:fs/promises').then((fsp) =>
-      fsp.writeFile(file, header + [...new Set(fixes)].join('\n\n') + '\n\nCOMMIT;\n'));
-    console.log(`\n  ${yellow('written to ' + file)} — review it, then apply with psql\n`);
+      fsp.writeFile(file, `${header}${body}\n\nCOMMIT;\n`));
+
+    if (!apply) {
+      console.log(`\n  ${yellow('written to ' + file)}`);
+      console.log(`  ${dim('apply it with:  npm run db:migrate    (or psql -f ' + file + ')')}\n`);
+    } else {
+      await applyMigration(body, db.name);
+    }
   }
 
   await closePool();
