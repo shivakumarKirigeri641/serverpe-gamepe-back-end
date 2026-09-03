@@ -130,6 +130,7 @@ async function liveSchema() {
     SELECT c.table_name,
            c.column_name,
            c.is_nullable,
+           c.data_type,
            (c.column_default IS NOT NULL) AS has_default,
            COALESCE(pk.is_primary, false)  AS is_primary
       FROM information_schema.columns c
@@ -152,11 +153,43 @@ async function liveSchema() {
     tables.get(r.table_name).push({
       name: r.column_name,
       notNull: r.is_nullable === 'NO',
+      type: r.data_type,
       hasDefault: r.has_default,
       isPrimary: r.is_primary,
     });
   }
   return tables;
+}
+
+/**
+ * What Postgres calls the type a schema.sql column declares.
+ *
+ * information_schema reports canonical names, so `int` comes back as
+ * "integer" and `timestamptz` as "timestamp with time zone". Comparing the
+ * declared word against that directly would report every column as wrong.
+ *
+ * Only the types this schema actually uses are mapped. Anything unrecognised
+ * returns null and is skipped rather than guessed at — a false "your schema is
+ * wrong" is worse than a missed check, because it teaches people to ignore the
+ * tool.
+ */
+function canonicalType(declared) {
+  const t = String(declared || '').trim().toLowerCase().split(/[\s(]/)[0];
+  return {
+    text: 'text',
+    int: 'integer',
+    integer: 'integer',
+    bigint: 'bigint',
+    bigserial: 'bigint',
+    serial: 'integer',
+    boolean: 'boolean',
+    bool: 'boolean',
+    jsonb: 'jsonb',
+    json: 'json',
+    timestamptz: 'timestamp with time zone',
+    date: 'date',
+    numeric: 'numeric',
+  }[t] ?? null;
 }
 
 /**
@@ -266,6 +299,25 @@ async function main() {
         problems++;
         console.log(`  ${yellow('nullable here, NOT NULL in schema')}  ${table}.${name}`);
         fixes.push(`ALTER TABLE ${table} ALTER COLUMN ${name} SET NOT NULL;   -- fails if existing rows are null`);
+      } else {
+        // The type. Missed on the first pass, and it cost a deploy: a
+        // `version` column that was integer in an old schema and text in this
+        // one passed every other check, then failed at runtime with "invalid
+        // input syntax for type integer". A column that exists and is the
+        // wrong type is worse than a missing one, because nothing warns you.
+        const wantType = canonicalType(col.sql.slice(name.length));
+        if (wantType && l.type && wantType !== l.type) {
+          problems++;
+          console.log(
+            `  ${red('wrong type')} ${table}.${name}  ` +
+            `${dim(`is ${l.type}, schema says ${wantType}`)}`,
+          );
+          fixes.push(
+            `-- ${table}.${name} is ${l.type} here and ${wantType} in schema.sql.\n` +
+            `-- USING converts the existing rows; check the result before trusting it.\n` +
+            `ALTER TABLE ${table} ALTER COLUMN ${name} TYPE ${wantType} USING ${name}::${wantType};`,
+          );
+        }
       }
     }
 
