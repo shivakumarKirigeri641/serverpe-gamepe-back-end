@@ -114,17 +114,47 @@ function parseSchema(sql) {
   return { tables, statements };
 }
 
+/**
+ * The live shape, including two facts the first version ignored and produced
+ * broken migrations without:
+ *
+ *   hasDefault — an extra NOT NULL column only breaks an insert if there is
+ *                nothing to fill it with. A serial `id` or a `created_at
+ *                DEFAULT now()` is perfectly fine to leave alone, and telling
+ *                an operator to strip NOT NULL off them is bad advice.
+ *   isPrimary  — Postgres refuses to drop NOT NULL from a primary key column,
+ *                so suggesting it produces a migration that cannot run.
+ */
 async function liveSchema() {
   const { rows } = await pool.query(`
-    SELECT table_name, column_name, is_nullable
-      FROM information_schema.columns
-     WHERE table_schema = 'public'
-     ORDER BY table_name, ordinal_position
+    SELECT c.table_name,
+           c.column_name,
+           c.is_nullable,
+           (c.column_default IS NOT NULL) AS has_default,
+           COALESCE(pk.is_primary, false)  AS is_primary
+      FROM information_schema.columns c
+      LEFT JOIN (
+        SELECT kcu.table_name, kcu.column_name, true AS is_primary
+          FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage kcu
+            ON kcu.constraint_name = tc.constraint_name
+           AND kcu.table_schema    = tc.table_schema
+         WHERE tc.constraint_type = 'PRIMARY KEY'
+           AND tc.table_schema    = 'public'
+      ) pk ON pk.table_name = c.table_name AND pk.column_name = c.column_name
+     WHERE c.table_schema = 'public'
+     ORDER BY c.table_name, c.ordinal_position
   `);
+
   const tables = new Map();
   for (const r of rows) {
     if (!tables.has(r.table_name)) tables.set(r.table_name, []);
-    tables.get(r.table_name).push({ name: r.column_name, notNull: r.is_nullable === 'NO' });
+    tables.get(r.table_name).push({
+      name: r.column_name,
+      notNull: r.is_nullable === 'NO',
+      hasDefault: r.has_default,
+      isPrimary: r.is_primary,
+    });
   }
   return tables;
 }
@@ -244,14 +274,29 @@ async function main() {
     for (const [name, l] of live) {
       if (wanted.has(name)) continue;
 
-      // Only a NOT NULL extra is a problem: the code's inserts do not mention
-      // the column, so the database rejects them. A nullable leftover is dead
-      // weight and nothing more — reporting it as drift would leave this tool
-      // permanently unhappy about a database that works perfectly.
-      if (l.notNull) {
+      // An extra column only breaks anything when the code's inserts cannot
+      // satisfy it: NOT NULL, and nothing to fill it with. A serial id or a
+      // created_at DEFAULT now() fills itself, so it is a leftover, not a
+      // fault — the first version of this check said otherwise and produced a
+      // migration Postgres rejected outright.
+      if (l.notNull && !l.hasDefault) {
         problems++;
-        console.log(`  ${red('extra NOT NULL column')} ${table}.${name}  ${dim('— inserts that omit it will fail')}`);
-        fixes.push(`ALTER TABLE ${table} ALTER COLUMN ${name} DROP NOT NULL;   -- or: ALTER TABLE ${table} DROP COLUMN ${name};`);
+        console.log(`  ${red('extra NOT NULL column')} ${table}.${name}  ${dim('— no default, so inserts that omit it fail')}`);
+
+        if (l.isPrimary) {
+          // Postgres will not drop NOT NULL from a primary key column, so
+          // offering that is offering something that cannot run.
+          fixes.push(
+            `-- ${table}.${name} is part of the PRIMARY KEY, so NOT NULL cannot be dropped.\n` +
+            `-- This table predates the current schema and needs a decision:\n` +
+            `--   ALTER TABLE ${table} RENAME TO ${table}_old;   -- keep the data, let the app create the new shape\n` +
+            `-- then re-run this check, and copy anything worth keeping across.`,
+          );
+        } else {
+          fixes.push(
+            `ALTER TABLE ${table} ALTER COLUMN ${name} DROP NOT NULL;   -- or: ALTER TABLE ${table} DROP COLUMN ${name};`,
+          );
+        }
       } else {
         leftovers.push(`${table}.${name}`);
       }

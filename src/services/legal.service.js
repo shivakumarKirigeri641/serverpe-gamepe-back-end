@@ -189,14 +189,43 @@ Questions about a specific game: message us with the room code and we will look 
 export async function ensureDocuments() {
   let added = 0;
   for (const d of defaults()) {
-    const { rowCount } = await query(
+    // Checked with a SELECT rather than ON CONFLICT.
+    //
+    // ON CONFLICT (doc_key, lang) needs a unique constraint on exactly that
+    // pair. A deployment carrying an older version of this table has UNIQUE
+    // (doc_key) instead, and Postgres rejects the statement outright rather
+    // than falling back - so the seeding, and therefore the policy pages,
+    // failed on precisely the databases that most needed seeding.
+    //
+    // This runs once at boot in a single process, so the read-then-write is
+    // not a race worth defending against.
+    const { rows } = await query(
+      'SELECT 1 FROM legal_documents WHERE doc_key = $1 AND COALESCE(lang, $2) = $2 LIMIT 1',
+      [d.doc_key, 'en'],
+    );
+    if (rows.length) {
+      // The row exists, so its words are left alone - they may be the ones a
+      // reviewer already read. Only the display order is aligned, and only on
+      // a row nobody has edited: a table carried over from an older schema had
+      // no sort_order at all, which left Privacy sorting below Fair Play.
+      await query(
+        `UPDATE legal_documents
+            SET sort_order = $2
+          WHERE doc_key = $1
+            AND updated_by IS DISTINCT FROM 'admin'
+            AND sort_order IS DISTINCT FROM $2`,
+        [d.doc_key, d.sort_order],
+      );
+      continue;
+    }
+
+    await query(
       `INSERT INTO legal_documents
          (doc_key, lang, title, summary, body, version, requires_consent, sort_order, updated_by)
-       VALUES ($1, 'en', $2, $3, $4, $5, $6, $7, 'seed')
-       ON CONFLICT (doc_key, lang) DO NOTHING`,
+       VALUES ($1, 'en', $2, $3, $4, $5, $6, $7, 'seed')`,
       [d.doc_key, d.title, d.summary, d.body, POLICY_VERSION, d.requires_consent, d.sort_order],
     );
-    added += rowCount;
+    added++;
   }
   if (added) log.info('legal documents seeded', { added });
   return { added };
