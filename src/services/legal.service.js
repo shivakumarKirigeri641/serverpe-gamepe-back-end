@@ -117,6 +117,12 @@ How long we keep it:
 - Game records are kept so results can be checked and reports reproduced.
 - Message contents are kept only as long as they are useful for support, and are cleared on a schedule after that.
 
+Our website:
+
+- ${config.siteBaseUrl || 'Our marketing site'} uses Google Tag Manager, which loads Google Analytics. These set cookies in your browser and record which pages you visited, roughly where you are, and what device you used.
+- That is about visitors to the website. It is separate from the game: the WhatsApp bot and your game board do not use Google Analytics, and nothing you do in a game is sent to it.
+- You can refuse these cookies through your browser settings, or by using its "do not track" or private browsing mode. The site works either way.
+
 Your choices:
 
 - You can ask for your data to be deleted at any time. See the Data Deletion policy.

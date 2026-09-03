@@ -129,10 +129,21 @@ header{display:flex;align-items:center;gap:10px;padding:6px 2px 12px}
 .nudge{text-align:center;font-size:13px;color:var(--dim);min-height:1.3em;margin:-4px 0 8px}
 
 /* ---- waiting for the rest of the table ---- */
+/* Always rendered, even before there is anything to say.
+   It used to appear only after the player answered, which pushed the ticket
+   and the whole board down the screen at the exact moment they were looking at
+   it - the numbers they had just been reading slid out from under their eyes.
+   The box now holds its place and only its contents fade in. */
 .waiting{
   display:flex;align-items:center;gap:10px;justify-content:center;
   background:var(--panel);border:1px solid var(--line);border-radius:12px;
   padding:12px;margin:10px 0;font-size:14px;color:var(--dim);
+  min-height:45px;
+  transition:opacity .2s;
+}
+.waiting.blank{
+  /* Invisible but still measured: visibility, not display. */
+  visibility:hidden;
 }
 .waiting .spin{
   width:15px;height:15px;border-radius:50%;flex:none;
@@ -141,7 +152,6 @@ header{display:flex;align-items:center;gap:10px;padding:6px 2px 12px}
 }
 @keyframes spin{to{transform:rotate(360deg)}}
 .waiting b{color:var(--text)}
-.waiting .left{margin-left:auto;font:700 15px ui-monospace,Menlo,monospace;color:var(--gold)}
 
 /* ---- the invite link, for the host ---- */
 .invite{background:rgba(212,165,55,.08);border:1px solid rgba(212,165,55,.3);
@@ -1279,15 +1289,33 @@ details.called[open] summary::after{transform:rotate(180deg)}
     var p = state.progress || {answered:0,total:0};
     var mine = state.yourAnswer || (state.current && answeredSeq === state.current.seq);
 
-    if (!mine || !state.current) { box.innerHTML = ''; return; }
+    // Before they answer, the strip holds the question rather than sitting
+    // empty. Reserving the height stops the board moving, but a blank box in
+    // the middle of the screen reads as something failing to load - and this
+    // is the one place a prompt belongs, directly under the two buttons.
+    //
+    // It restates the number and nothing else. It cannot hint: whether that
+    // number is on the ticket is exactly what the player is there to work out.
+    if (!state.current) {
+      // No number on the board yet: hold the space, say nothing.
+      box.innerHTML = '<div class="waiting blank"><span>&nbsp;</span></div>';
+      return;
+    }
+    if (!mine) {
+      box.innerHTML = '<div class="waiting"><span>Look for <b>' +
+        state.current.value + '</b> on your ticket</span></div>';
+      return;
+    }
 
     var others = Math.max(0, p.total - p.answered);
+    // No countdown here. The ring on the called number is the timer, and a
+    // second one at the bottom of the screen made the player's eyes travel
+    // between two clocks counting the same seconds.
     box.innerHTML = '<div class="waiting">' +
       (others > 0 ? '<span class="spin"></span>' : '<span>✓</span>') +
       '<span>' + (others > 0
         ? 'Waiting for <b>' + others + '</b> more player' + (others === 1 ? '' : 's') + '…'
         : 'Everyone has answered - next number coming up') + '</span>' +
-      '<span class="left" id="waitLeft"></span>' +
     '</div>';
   }
 
@@ -1372,8 +1400,7 @@ details.called[open] summary::after{transform:rotate(180deg)}
       if (!ring) return;
       ring.setAttribute('stroke-dashoffset', String(94.2 * (1 - Math.max(0, left) / total)));
       t.textContent = left > 0 ? left : '';
-      var wl = document.getElementById('waitLeft');
-      if (wl) wl.textContent = left > 0 ? left + 's' : '';
+
     }
   }
 
