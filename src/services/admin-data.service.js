@@ -252,6 +252,48 @@ export async function livePlayers() {
 
 // ─── Players ───────────────────────────────────────────────────────────────
 
+/**
+ * The weights behind a player's score. Named, so changing one is a decision
+ * rather than an edit to an expression.
+ */
+export const POINTS = {
+  prize: 10,        // winning one of the six
+  correct: 1,       // spotting a called number on your own ticket
+  missed: -2,       // said "not on mine" when it was - the costly mistake
+  wrongTap: -1,     // said "I have it" when they did not - costs nothing in play
+};
+
+/**
+ * A player's score, as the panel shows it.
+ *
+ * Derived on read, never stored: a stored counter drifts the first time a game
+ * is replayed or a claim reversed.
+ *
+ * ── Why the two mistakes are weighted differently ─────────────────────────
+ *
+ * A missed number is the expensive one. The player had it, said they did not,
+ * and walked past a prize they had already earned - so it is weighted twice a
+ * correct mark. A wrong tap costs nothing in the game itself (claims are
+ * validated against the numbers actually called, never against what was
+ * marked), so it is scored as a small misread, not a foul.
+ *
+ * No-response is deliberately NOT penalised. A player who never answered
+ * usually lost their connection, and scoring that would rank people by the
+ * quality of their mobile signal.
+ *
+ * The score can go negative for someone who marked carelessly and won nothing.
+ * That is left visible rather than floored at zero - a negative number says
+ * something a zero would hide.
+ *
+ * Admin-only. Nothing in the game awards, spends or mentions points, and no
+ * player is ever shown this number.
+ */
+export const pointsFor = (row) =>
+  (Number(row.prizes_won) || 0)      * POINTS.prize +
+  (Number(row.correct_answers) || 0) * POINTS.correct +
+  (Number(row.missed) || 0)          * POINTS.missed +
+  (Number(row.wrong_taps) || 0)      * POINTS.wrongTap;
+
 export async function listPlayers({ limit = 100, q = null } = {}) {
   const { rows } = await query(`
     SELECT p.id, p.wa_id, ${NAME} AS display_name, p.locale,
@@ -264,7 +306,15 @@ export async function listPlayers({ limit = 100, q = null } = {}) {
              WHERE c.player_id=p.id AND c.status='awarded')                      AS prizes_won,
            (SELECT count(*) FROM claims c
              WHERE c.player_id=p.id AND c.status='awarded'
-               AND c.claim_type='full_house')                                    AS full_houses
+               AND c.claim_type='full_house')                                    AS full_houses,
+           (SELECT count(*) FROM draw_answers a
+             WHERE a.player_id=p.id AND a.was_correct)                           AS correct_answers,
+           (SELECT count(*) FROM draw_answers a
+             WHERE a.player_id=p.id AND a.answer='no'  AND a.was_correct=false)  AS missed,
+           (SELECT count(*) FROM draw_answers a
+             WHERE a.player_id=p.id AND a.answer='yes' AND a.was_correct=false)  AS wrong_taps,
+           (SELECT count(*) FROM draw_answers a
+             WHERE a.player_id=p.id AND a.answer='no_response')                  AS no_response
       FROM players p
       LEFT JOIN blocked_numbers b ON b.wa_id = p.wa_id
      WHERE ($2::text IS NULL
@@ -273,7 +323,14 @@ export async function listPlayers({ limit = 100, q = null } = {}) {
      ORDER BY p.last_seen_at DESC
      LIMIT $1
   `, [limit, q]);
-  return rows.map(numify);
+  // Scored here as well as in playerDetail. Without it the table's Points
+  // column rendered undefined as "0" for everyone, which reads as data rather
+  // than as a missing field - and disagreed with the player's own page.
+  return rows.map((r) => {
+    const player = numify(r);
+    player.points = pointsFor(player);
+    return player;
+  });
 }
 
 export async function playerDetail(id) {
@@ -289,7 +346,13 @@ export async function playerDetail(id) {
                AND c.claim_type='full_house')                               AS full_houses,
            (SELECT count(*) FROM draw_answers a
              WHERE a.player_id=p.id AND a.was_correct)                      AS correct_answers,
-           (SELECT count(*) FROM draw_answers a WHERE a.player_id=p.id)     AS total_answers
+           (SELECT count(*) FROM draw_answers a WHERE a.player_id=p.id)     AS total_answers,
+           (SELECT count(*) FROM draw_answers a
+             WHERE a.player_id=p.id AND a.answer='no'  AND a.was_correct=false) AS missed,
+           (SELECT count(*) FROM draw_answers a
+             WHERE a.player_id=p.id AND a.answer='yes' AND a.was_correct=false) AS wrong_taps,
+           (SELECT count(*) FROM draw_answers a
+             WHERE a.player_id=p.id AND a.answer='no_response')                 AS no_response
       FROM players p
       LEFT JOIN blocked_numbers b ON b.wa_id = p.wa_id
      WHERE p.id = $1
@@ -299,7 +362,11 @@ export async function playerDetail(id) {
   const player = numify(rows[0]);
   // Points are derived, not stored: a stored counter would drift the first
   // time a game was replayed or a claim reversed.
-  player.points = player.prizes_won * 10 + player.correct_answers;
+  player.points = pointsFor(player);
+  // Decisions, not answers: a number nobody responded to was still a chance to
+  // get it right, so leaving it out would flatter an absent player.
+  const decided = player.correct_answers + player.missed + player.wrong_taps;
+  player.accuracy_pct = decided ? Math.round((player.correct_answers / decided) * 100) : null;
   return player;
 }
 

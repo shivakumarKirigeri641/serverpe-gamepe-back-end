@@ -285,6 +285,65 @@ function addColumnSql(table, col) {
  *     decision about real data. Guessing it is how a migration quietly writes
  *     the wrong thing into every existing row.
  */
+/**
+ * Every CREATE INDEX in schema.sql, by index name.
+ *
+ * Indexes were this checker's blind spot: it compared columns only, so an
+ * index added to schema.sql was invisible here and the deploy notes had to
+ * fall back to a hand-typed psql line. A missing index breaks nothing on the
+ * day it goes missing - it just makes a page slower and slower until somebody
+ * notices, which is exactly the kind of drift a checker exists to catch.
+ */
+function parseIndexes(sql) {
+  const found = new Map();
+  const re = /CREATE\s+(UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_]\w*)\s+ON\s+([\s\S]*?);/gi;
+  let m;
+  while ((m = re.exec(sql))) {
+    const [, unique, name, rest] = m;
+    found.set(name, 'CREATE ' + (unique ? 'UNIQUE ' : '') + 'INDEX ' + name + ' ON ' + rest.trim() + ';');
+  }
+  return found;
+}
+
+/** The indexes that actually exist, by name. */
+async function liveIndexes() {
+  const { rows } = await pool.query(
+    'SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()',
+  );
+  return new Set(rows.map((r) => r.indexname));
+}
+
+/**
+ * Creates the missing indexes, one statement at a time.
+ *
+ * CONCURRENTLY, and so outside any transaction: a plain CREATE INDEX holds a
+ * lock that blocks writes to the table for as long as it runs, and this has to
+ * be safe to run on a deployment with games in progress. Postgres refuses
+ * CONCURRENTLY inside a transaction block, which is why these cannot ride
+ * along in drift-fix.sql with the column changes.
+ */
+async function applyIndexes(missing) {
+  let made = 0;
+  for (const [name, statement] of missing) {
+    const concurrent = statement.replace(
+      /^CREATE\s+(UNIQUE\s+)?INDEX\s+/i,
+      (_, u) => 'CREATE ' + (u ? 'UNIQUE ' : '') + 'INDEX CONCURRENTLY IF NOT EXISTS ',
+    );
+    try {
+      await pool.query(concurrent);
+      console.log('  ' + green('created') + ' ' + name);
+      made++;
+    } catch (err) {
+      // A failed CONCURRENTLY leaves an invalid index behind, so say so rather
+      // than letting it look as though nothing happened.
+      console.log('  ' + red('failed') + ' ' + name + ': ' + err.message);
+      console.log('  ' + dim('drop the invalid index before retrying: DROP INDEX IF EXISTS ' + name + ';'));
+      process.exitCode = 1;
+    }
+  }
+  return made;
+}
+
 async function applyMigration(body, dbName) {
   if (body.includes('<<CHOOSE A VALUE>>')) {
     console.log(`\n  ${red('not applied')} — this migration needs values filled in first.`);
@@ -404,12 +463,34 @@ async function main() {
     console.log(`\n  ${dim('tables not in schema.sql (left alone): ' + extraTables.join(', '))}`);
   }
 
+  // Indexes are reported and applied apart from the column migration: they
+  // cannot share its transaction, and a missing one is a slow page rather than
+  // a failed boot, so it does not belong in the same list.
+  const wantIndexes = parseIndexes(sql);
+  const haveIndexes = await liveIndexes();
+  const missingIndexes = new Map([...wantIndexes].filter(([n]) => !haveIndexes.has(n)));
+
   if (leftovers.length) {
     console.log('  ' + dim('columns the code no longer uses (nullable, harmless): ' + leftovers.join(', ')));
   }
 
+  if (missingIndexes.size) {
+    console.log('\n  ' + yellow('missing indexes') + ' ' + dim('(' + missingIndexes.size + ')'));
+    for (const [name, statement] of missingIndexes) {
+      console.log('    ' + name);
+      console.log('      ' + dim(statement));
+    }
+    if (apply) {
+      console.log('\n  creating them on ' + bold(db.name) + ' ' +
+        dim('(CONCURRENTLY - safe while games are running)') + ' ...');
+      await applyIndexes(missingIndexes);
+    } else {
+      console.log('\n  ' + dim('create them with:  npm run db:migrate'));
+    }
+  }
+
   if (!problems) {
-    console.log(`  ${green('✓')} every table and column the code needs is present and writable\n`);
+    console.log(`  ${green('✓')} every table and column the code needs is present and writable` + (missingIndexes.size && !apply ? `\n  ${yellow('!')} ${missingIndexes.size} index(es) still to create` : '') + `\n`);
   } else {
     console.log(`\n${bold('Migration')} ${dim('— read it before running it')}\n`);
     for (const f of [...new Set(fixes)]) console.log('  ' + f.split('\n').join('\n  '));
@@ -441,7 +522,11 @@ async function main() {
   }
 
   await closePool();
-  process.exitCode = problems ? 1 : 0;
+  // A missing index is drift too. A green exit code with one outstanding
+  // would let a deploy script wave it straight through.
+  if (!process.exitCode) {
+    process.exitCode = problems || (missingIndexes.size && !apply) ? 1 : 0;
+  }
 }
 
 main().catch(async (err) => {

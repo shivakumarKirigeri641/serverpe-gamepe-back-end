@@ -978,10 +978,11 @@ details.called[open] summary::after{transform:rotate(180deg)}
         '<div class="muted">Your taps against what was actually called.</div>' +
         '<ul class="prizes">' +
         r.players.map(function(p){
-          var pct = p.total ? Math.round((p.correct / p.total) * 100) : 0;
+          var den = p.answered || p.total;
+      var pct = den ? Math.round((p.correct / den) * 100) : 0;
           var you = state.you && p.name === state.you.name;
           return '<li>' + (you ? '<b style="color:var(--gold)">You</b>' : esc(p.name)) +
-            '<b>' + p.correct + '/' + p.total + ' &middot; ' + pct + '%</b></li>';
+            '<b>' + p.correct + '/' + den + ' &middot; ' + pct + '%</b></li>';
         }).join('') + '</ul></div>';
     }
 

@@ -225,14 +225,20 @@ function summaryText({ game, results, mine, won, name }) {
   }
 
   if (mine) {
-    const pct = mine.total ? Math.round((mine.correct / mine.total) * 100) : 0;
+    // Accuracy over decisions, not over all 90. Counting numbers nobody
+    // answered as errors punished a player whose signal dropped.
+    const pct = mine.answered ? Math.round((mine.correct / mine.answered) * 100) : 0;
     lines.push(
       '',
       '*How you played*',
-      `• Numbers marked correctly: ${mine.correct} of ${mine.total} (${pct}%)`,
-      `• Numbers you missed: ${mine.missed}`,
-      `• Prizes won: ${won.length}`,
+      `• Marked correctly: ${mine.correct} of ${mine.answered} answered (${pct}%)`,
     );
+    // Each line only when it happened - a clean sheet should read as a clean
+    // sheet, not as a list of zeroes.
+    if (mine.missed)     lines.push(`• On your ticket but said no: ${mine.missed}`);
+    if (mine.wrongTaps)  lines.push(`• Marked but not on your ticket: ${mine.wrongTaps}`);
+    if (mine.noResponse) lines.push(`• Never answered: ${mine.noResponse}`);
+    lines.push(`• Prizes won: ${won.length}`);
   }
 
   lines.push('', 'Your full report, ticket and every number is in the link below.');

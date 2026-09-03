@@ -176,6 +176,9 @@ CREATE TABLE draw_answers (
   UNIQUE (game_id, seq, player_id)                -- one answer per number
 );
 CREATE INDEX draw_answers_game_seq_idx ON draw_answers (game_id, seq);
+-- The panel counts a player's correct answers for every row of the players
+-- list. Without this each row scans the whole table.
+CREATE INDEX draw_answers_player_idx  ON draw_answers (player_id);
 
 CREATE TABLE claims (
   id          bigserial   PRIMARY KEY,

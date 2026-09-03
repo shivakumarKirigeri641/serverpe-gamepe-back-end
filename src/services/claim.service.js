@@ -188,10 +188,21 @@ export async function getResults(gameId) {
     [gameId],
   );
 
+  // Three different things were being called "missed".
+  //
+  // This query used to return no_response under that name, which the report
+  // page labelled honestly ("Never answered") but the WhatsApp summary did
+  // not - it said "Numbers you missed", meaning something quite different and
+  // more damning than what it counted. The split below matches the one in
+  // history.service.js so a player reading their game report and their
+  // lifetime history is reading the same words about the same thing.
   const { rows: accuracy } = await query(
     `SELECT p.id, p.display_name, p.wa_id,
-            count(*) FILTER (WHERE a.was_correct)            AS correct,
-            count(*) FILTER (WHERE a.answer = 'no_response') AS missed,
+            count(*) FILTER (WHERE a.was_correct)                              AS correct,
+            count(*) FILTER (WHERE a.answer = 'no'  AND a.was_correct = false) AS missed,
+            count(*) FILTER (WHERE a.answer = 'yes' AND a.was_correct = false) AS wrong_taps,
+            count(*) FILTER (WHERE a.answer = 'no_response')                   AS no_response,
+            count(*) FILTER (WHERE a.answer <> 'no_response')                  AS answered,
             count(*)                                          AS total
        FROM draw_answers a JOIN players p ON p.id = a.player_id
       WHERE a.game_id = $1
@@ -208,7 +219,10 @@ export async function getResults(gameId) {
     players: accuracy.map((r) => ({
       name: displayNameFor(r),
       correct: Number(r.correct),
-      missed: Number(r.missed),
+      missed: Number(r.missed),           // had it, said they did not
+      wrongTaps: Number(r.wrong_taps),    // did not have it, said they did
+      noResponse: Number(r.no_response),  // never answered at all
+      answered: Number(r.answered),       // everything they did respond to
       total: Number(r.total),
     })),
   };
