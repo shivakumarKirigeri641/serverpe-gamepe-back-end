@@ -5,6 +5,8 @@ node_modules/
 src/temp/
 src/uploads/
 npm-debug.log*
+.env.example
+.env.prod.bak
 *.log
 .DS_Store
 
