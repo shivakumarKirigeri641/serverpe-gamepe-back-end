@@ -12,6 +12,7 @@ import { setOutboundRecorder } from './whatsapp/client.js';
 import { logOutbound } from './services/player.service.js';
 import { loadSettings } from './services/settings.service.js';
 import { ensureTriggers, sendDigest } from './services/notification.service.js';
+import { ensureDocuments } from './services/legal.service.js';
 import { startDailySummary } from './services/daily-summary.service.js';
 
 function banner() {
@@ -60,13 +61,17 @@ async function main() {
   await assertConnection();
   await loadSettings();
 
-  // Seeding the alert triggers must not be able to stop the platform.
-  //
-  // It did once: a database created from an older schema still had a NOT NULL
-  // column this insert does not fill, so a failure in the *email alerts* setup
-  // took the whole server down at boot and no game could be played. Alerts are
-  // worth having and they are not worth that. The error is loud, and the games
-  // carry on.
+  // Meta and Razorpay both review these pages, so a missing document is a
+  // failed review rather than a cosmetic problem. Seeded before anything
+  // serves traffic, and never overwriting an operator's edits.
+  try {
+    await ensureDocuments();
+  } catch (err) {
+    log.error('could not seed legal documents', { message: err.message });
+  }
+
+  // Same reasoning for the alert triggers: a failure here once took the whole
+  // server down at boot over email configuration, and no game could be played.
   try {
     await ensureTriggers();
   } catch (err) {

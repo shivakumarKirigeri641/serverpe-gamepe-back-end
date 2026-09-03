@@ -8,6 +8,7 @@
 -- Switch to additive migrations once there are real players to protect.
 -- ===========================================================================
 
+DROP TABLE IF EXISTS legal_documents    CASCADE;
 DROP TABLE IF EXISTS notification_log   CASCADE;
 DROP TABLE IF EXISTS notification_queue CASCADE;
 DROP TABLE IF EXISTS notification_settings CASCADE;
@@ -507,3 +508,34 @@ CREATE TABLE notification_log (
   sent_at     timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX notification_log_idx ON notification_log (sent_at DESC);
+
+/*
+ * The policies, as data.
+ *
+ * They used to be hardcoded in a page template, which made them impossible
+ * to correct without a deploy - and Meta, Razorpay and the app stores all
+ * review these pages and ask for changes. One row per document per language.
+ *
+ *  is plain text with blank-line paragraphs and "- " bullets. Not HTML:
+ * these are rendered into three different surfaces (the marketing site, the
+ * in-WhatsApp page, and the admin editor), and a stored HTML blob would be an
+ * injection risk in all three.
+ */
+CREATE TABLE legal_documents (
+  doc_key          text        NOT NULL,
+  lang             text        NOT NULL DEFAULT 'en',
+  title            text        NOT NULL,
+  summary          text,
+  body             text        NOT NULL,
+  -- Bumped by hand when the words change materially. Consent is recorded
+  -- against this, so changing it asks every player to agree again.
+  version          text        NOT NULL,
+  -- Whether accepting this is required before playing. Only the terms are.
+  requires_consent boolean     NOT NULL DEFAULT false,
+  is_active        boolean     NOT NULL DEFAULT true,
+  sort_order       int         NOT NULL DEFAULT 100,
+  updated_at       timestamptz NOT NULL DEFAULT now(),
+  updated_by       text,
+  PRIMARY KEY (doc_key, lang)
+);
+CREATE INDEX legal_documents_active_idx ON legal_documents (lang, is_active, sort_order);

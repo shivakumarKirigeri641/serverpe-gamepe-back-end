@@ -13,7 +13,8 @@ import { Router } from 'express';
 import { config } from '../config/env.js';
 import { pool } from '../db/pool.js';
 import { publishedTestimonials } from '../services/feedback.service.js';
-import { businessProfile, legalDocuments } from '../services/admin-data.service.js';
+import { businessProfile } from '../services/admin-data.service.js';
+import { listDocuments } from '../services/legal.service.js';
 import { POLICY_VERSION } from '../services/player.service.js';
 import { trialState, maintenance } from '../services/settings.service.js';
 
@@ -134,8 +135,15 @@ export function publicRoutes() {
     }, 30);   // short cache - this is the one thing that must not go stale
   }));
 
-  router.get('/public/legal', wrap(async (_q, res) =>
-    ok(res, legalDocuments(config, POLICY_VERSION), 300)));
+  /**
+   * The policies, from the database.
+   *
+   * Meta and Razorpay both fetch these during review, so the cache is short:
+   * an operator correcting wording in the panel should not be told to wait
+   * five minutes before re-submitting.
+   */
+  router.get('/public/legal', wrap(async (req, res) =>
+    ok(res, await listDocuments(String(req.query.lang || 'en')), 60)));
 
   /**
    * Approved player comments. Never all feedback - only rows an operator

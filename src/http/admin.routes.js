@@ -13,6 +13,7 @@ import { log } from '../utils/logger.js';
 import { query } from '../db/pool.js';
 import { requestInfo } from '../utils/request-info.js';
 import { geoStatus } from '../services/geo.service.js';
+import { listDocuments as listLegal, updateDocument as updateLegal } from '../services/legal.service.js';
 import { geographyReport } from '../services/geography.service.js';
 import { listenerCount } from '../services/live.service.js';
 import {
@@ -541,8 +542,38 @@ export function adminRoutes() {
 
   router.get('/business', wrap(async (_q, res) => ok(res, data.businessProfile(config))));
 
-  router.get('/legal/documents', wrap(async (_q, res) =>
-    ok(res, data.legalDocuments(config, POLICY_VERSION))));
+  /**
+   * The policies, for the editor.
+   *
+   * Straight from the database including the full body - the operator is
+   * about to edit these words, so a summary would be useless.
+   */
+  router.get('/legal/documents', wrap(async (req, res) =>
+    ok(res, await listLegal(String(req.query.lang || 'en')))));
+
+  /**
+   * Edit one document.
+   *
+   * The key is never editable: Meta, Razorpay and anyone who has bookmarked a
+   * policy hold the URL it forms, and renaming it 404s a link somebody
+   * official is holding. Words, summary, version and active flag only.
+   */
+  router.patch('/legal/documents/:key', wrap(async (req, res) => {
+    const updated = await updateLegal(
+      String(req.params.key),
+      String(req.body?.lang || 'en'),
+      {
+        title: req.body?.title,
+        summary: req.body?.summary,
+        body: req.body?.body,
+        version: req.body?.version,
+        isActive: req.body?.isActive,
+      },
+      req.admin?.label ?? 'admin',
+    );
+    if (!updated) return res.status(404).json({ error: 'No such document' });
+    ok(res, updated);
+  }));
 
   router.get('/queues', wrap(async (_q, res) => ok(res, await data.queueStats())));
 
