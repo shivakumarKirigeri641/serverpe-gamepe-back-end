@@ -95,3 +95,41 @@ export function historyUrl(playerId) {
 export function supportUrl(playerId, gameId = 0) {
   return `${config.publicRoot}/support/${signBoardToken(gameId, playerId)}`;
 }
+
+/**
+ * Fatafat round links.
+ *
+ * Namespaced with a prefix rather than reusing the board scheme directly. Both
+ * sign a pair of ids, so without the prefix a tambola board token for game 7
+ * would verify perfectly as a Fatafat token for round 7 - the ids are
+ * different sequences, and one player's link would occasionally open another
+ * player's round.
+ */
+export function signRoundToken(roundId, playerId) {
+  const body = `fatafat:${roundId}.${playerId}`;
+  return `f${roundId}.${playerId}.${sign(body)}`;
+}
+
+export function verifyRoundToken(token) {
+  const parts = String(token ?? '').split('.');
+  if (parts.length !== 3) return null;
+
+  const [rawRound, playerId, signature] = parts;
+  if (!rawRound.startsWith('f')) return null;
+  const roundId = rawRound.slice(1);
+
+  const expected = sign(`fatafat:${roundId}.${playerId}`);
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+
+  const ids = { roundId: Number(roundId), playerId: Number(playerId) };
+  if (!Number.isInteger(ids.roundId) || ids.roundId <= 0) return null;
+  if (!Number.isInteger(ids.playerId) || ids.playerId <= 0) return null;
+  return ids;
+}
+
+/** The URL a player opens to play one Fatafat round. */
+export function fatafatUrl(roundId, playerId) {
+  return `${config.publicRoot}/fatafat/${signRoundToken(roundId, playerId)}`;
+}

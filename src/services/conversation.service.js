@@ -13,8 +13,10 @@ import { query } from '../db/pool.js';
 import { log } from '../utils/logger.js';
 import { boardUrl, looksLikeRoomCode, normaliseRoomCode } from '../utils/code.js';
 import { sendText, sendButtons, sendCtaUrl, sendList } from '../whatsapp/client.js';
+import { createRound } from './fatafat.service.js';
+import { fatafatUrl } from '../utils/code.js';
 import {
-  copy, BUTTONS, OPTIONS, menuButtons, consentButtons, planButtons, optionsList,
+  copy, bakra, bothGames, BUTTONS, OPTIONS, menuButtons, consentButtons, planButtons, optionsList,
 } from './copy.js';
 import {
   findOrCreatePlayer, getState, setState, hasConsented, recordConsent,
@@ -162,7 +164,11 @@ async function handleButton(player, state, replyId) {
     case BUTTONS.MENU_PLAY:
       return startHostFlow(player);
 
+    case BUTTONS.MENU_BAKRA:
+      return startBakra(player);
+
     case BUTTONS.MENU_JOIN:
+    case OPTIONS.JOIN:
       await setState(player.id, STATES.AWAITING_JOIN_CODE, {});
       return sendText(player.wa_id, copy.askJoinCode());
 
@@ -400,6 +406,26 @@ async function handleLeave(player) {
   }
 }
 
+// --- Tap Bakra --------------------------------------------------------------
+
+/**
+ * Hands out one round of Tap Bakra.
+ *
+ * A fresh round every time, and a fresh signed link with it: the link names
+ * one round and one player, so it cannot be forwarded to a friend to play on
+ * somebody else's behalf. No lobby, no waiting for anyone - the whole point of
+ * this game next to Tambola is that it starts the moment you tap.
+ */
+async function startBakra(player) {
+  // Their WhatsApp locale decides the first round's language; the toggle on
+  // the page decides every one after that.
+  const round = await createRound(player.id, /^hi/i.test(player.locale || '') ? 'hi' : 'en');
+  return sendCtaUrl(player.wa_id, bakra.intro(), {
+    displayText: bakra.linkText(),
+    url: fatafatUrl(round.id, player.id),
+  });
+}
+
 // --- Options ---------------------------------------------------------------
 
 /** Their most recent FINISHED game. A game still running has no report yet. */
@@ -418,21 +444,81 @@ async function handlePlayHistory(player) {
   );
   const played = rows[0].n;
 
+  const { rows: bakra } = await query(
+    "SELECT count(*)::int AS n FROM fatafat_rounds WHERE player_id = $1 AND status = 'finished'",
+    [player.id],
+  );
+  const rounds = bakra[0].n;
+
   // Nothing to report is not an error, and should not read like one.
-  if (played === 0) return sendText(player.wa_id, copy.noHistoryYet());
+  if (played === 0 && rounds === 0) return sendText(player.wa_id, bothGames.nothingPlayed());
+
+  // Played only Tap Bakra: the Tambola history page would be an empty document,
+  // so send them where their rounds actually are.
+  if (played === 0) {
+    const { rows: last } = await query(
+      "SELECT id FROM fatafat_rounds WHERE player_id = $1 AND status = 'finished' ORDER BY finished_at DESC LIMIT 1",
+      [player.id],
+    );
+    return sendCtaUrl(player.wa_id, bothGames.history(0, rounds), {
+      displayText: 'Open Tap Bakra',
+      url: fatafatUrl(last[0].id, player.id),
+    });
+  }
 
   await recordEvent({
     type: 'history.requested', source: 'whatsapp', playerId: player.id,
-    properties: { games: played },
+    properties: { games: played, bakraRounds: rounds },
   });
 
-  return sendCtaUrl(player.wa_id, copy.playHistory(played), {
-    displayText: 'Get my history',
-    url: historyUrl(player.id),
-  });
+  // "History" is plural by definition, so both games are shown side by side
+  // rather than one leading and the other appended as a footnote. WhatsApp
+  // allows a single URL button, so it opens whichever game has more to show
+  // and the other link sits in the body, tappable all the same.
+  let bakraUrl = null;
+  if (rounds > 0) {
+    const { rows: lastB } = await query(
+      `SELECT id FROM fatafat_rounds
+        WHERE player_id = $1 AND status = 'finished'
+        ORDER BY finished_at DESC LIMIT 1`,
+      [player.id],
+    );
+    if (lastB[0]) bakraUrl = fatafatUrl(lastB[0].id, player.id);
+  }
+
+  const tambolaUrl = historyUrl(player.id);
+  const leadIsTambola = played >= rounds;
+
+  return sendCtaUrl(
+    player.wa_id,
+    // The link the button already opens is left out of the body - printing
+    // it twice in one message reads as a mistake.
+    bothGames.historyBoth({
+      games: played,
+      rounds,
+      tambolaUrl: leadIsTambola ? null : tambolaUrl,
+      bakraUrl: leadIsTambola ? bakraUrl : null,
+    }),
+    leadIsTambola
+      ? { displayText: 'Open Tambola history', url: tambolaUrl }
+      : { displayText: 'Open Tap Bakra', url: bakraUrl },
+  );
 }
 
 async function handleRecentReport(player) {
+  // Whichever game they actually played last. Asking "which game?" first is a
+  // menu answering a menu, and the honest answer is almost always the one they
+  // just finished.
+  const { rows: lastBakra } = await query(
+    `SELECT id, score, finished_at,
+            (SELECT count(*) FILTER (WHERE was_correct)::int FROM fatafat_answers a WHERE a.round_id = r.id) AS correct,
+            question_count
+       FROM fatafat_rounds r
+      WHERE player_id = $1 AND status = 'finished'
+      ORDER BY finished_at DESC NULLS LAST LIMIT 1`,
+    [player.id],
+  );
+
   const { rows } = await query(
     `SELECT g.id, g.code, g.ended_at
        FROM game_players gp JOIN games g ON g.id = gp.game_id
@@ -440,7 +526,36 @@ async function handleRecentReport(player) {
       ORDER BY g.ended_at DESC NULLS LAST LIMIT 1`,
     [player.id],
   );
-  if (!rows[0]) return sendText(player.wa_id, copy.noRecentGame());
+
+  const bakraAt = lastBakra[0]?.finished_at ? new Date(lastBakra[0].finished_at).getTime() : 0;
+  const tambolaAt = rows[0]?.ended_at ? new Date(rows[0].ended_at).getTime() : 0;
+
+  if (bakraAt && bakraAt >= tambolaAt) {
+    const b = lastBakra[0];
+    const when = new Date(b.finished_at).toLocaleString('en-IN', {
+      day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
+      timeZone: config.timezone,
+    });
+    // The other game is offered once, underneath, so somebody who meant the
+    // Tambola one is a tap away rather than back at the menu.
+    let also = '';
+    if (rows[0]) {
+      const tWhen = rows[0].ended_at
+        ? new Date(rows[0].ended_at).toLocaleString('en-IN', {
+            day: 'numeric', month: 'short', timeZone: config.timezone,
+          })
+        : 'earlier';
+      also = bothGames.alsoPlayed('Tambola', tWhen, reportUrl(rows[0].id, player.id));
+    }
+
+    return sendCtaUrl(
+      player.wa_id,
+      bothGames.recentBakra(Math.round(Number(b.score)), b.correct, b.question_count, when) + also,
+      { displayText: 'Open report', url: fatafatUrl(b.id, player.id) },
+    );
+  }
+
+  if (!rows[0]) return sendText(player.wa_id, bothGames.nothingPlayed());
 
   const g = rows[0];
   const when = g.ended_at
@@ -450,14 +565,23 @@ async function handleRecentReport(player) {
       })
     : 'recently';
 
-  return sendCtaUrl(player.wa_id, copy.recentReport(g.code, when, reportUrl(g.id, player.id)), {
-    displayText: 'Open report',
-    url: reportUrl(g.id, player.id),
-  });
+  let alsoBakra = '';
+  if (lastBakra[0]) {
+    const bWhen = new Date(lastBakra[0].finished_at).toLocaleString('en-IN', {
+      day: 'numeric', month: 'short', timeZone: config.timezone,
+    });
+    alsoBakra = bothGames.alsoPlayed('Tap Bakra', bWhen, fatafatUrl(lastBakra[0].id, player.id));
+  }
+
+  return sendCtaUrl(
+    player.wa_id,
+    copy.recentReport(g.code, when, reportUrl(g.id, player.id)) + alsoBakra,
+    { displayText: 'Open report', url: reportUrl(g.id, player.id) },
+  );
 }
 
 async function handleDemo(player) {
-  return sendCtaUrl(player.wa_id, copy.demoIntro(), {
+  return sendCtaUrl(player.wa_id, bothGames.howToPlay(), {
     displayText: 'Watch the demo',
     url: config.demoUrl,
   });

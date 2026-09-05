@@ -20,6 +20,7 @@ import {
   login, revokeSession, listSessions, requireAdmin, purgeExpired,
 } from '../services/admin-session.service.js';
 import * as data from '../services/admin-data.service.js';
+import * as bakra from '../services/bakra-admin.service.js';
 import { POLICY_VERSION } from '../services/player.service.js';
 import * as settings from '../services/settings.service.js';
 import * as support from '../services/support.service.js';
@@ -107,6 +108,25 @@ export function adminRoutes() {
 
   // ─── players ─────────────────────────────────────────────────────────────
 
+  // --- Tap Bakra -----------------------------------------------------------
+  //
+  // Its own namespace, matching the panel's master tab. Nothing here touches
+  // a tambola table, and nothing in the tambola endpoints touches these.
+
+  router.get('/bakra/overview', wrap(async (_q, res) => ok(res, await bakra.overview())));
+  router.get('/bakra/daily', wrap(async (req, res) =>
+    ok(res, await bakra.daily(Math.min(Math.max(Number(req.query.days) || 30, 1), 180)))));
+  router.get('/bakra/live', wrap(async (_q, res) => ok(res, await bakra.live())));
+  router.get('/bakra/rounds', wrap(async (req, res) =>
+    ok(res, await bakra.recentRounds(Math.min(Math.max(Number(req.query.limit) || 50, 1), 200)))));
+  router.get('/bakra/rounds/:id', idParam, wrap(async (req, res) => {
+    const detail = await bakra.roundDetail(req.id);
+    if (!detail) return res.status(404).json({ error: 'round not found' });
+    ok(res, detail);
+  }));
+  router.get('/bakra/questions', wrap(async (_q, res) => ok(res, await bakra.questionAnalytics())));
+  router.get('/bakra/leaderboard', wrap(async (req, res) =>
+    ok(res, await bakra.leaderboard(Math.min(Math.max(Number(req.query.limit) || 25, 1), 100)))));
   router.get('/players', wrap(async (req, res) =>
     ok(res, await data.listPlayers({
       limit: int(req.query.limit, 100),

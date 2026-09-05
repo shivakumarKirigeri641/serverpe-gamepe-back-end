@@ -23,6 +23,8 @@ DROP TABLE IF EXISTS analytics_events   CASCADE;
 DROP TABLE IF EXISTS board_sessions     CASCADE;
 DROP TABLE IF EXISTS feedback           CASCADE;
 DROP TABLE IF EXISTS claims             CASCADE;
+DROP TABLE IF EXISTS fatafat_answers    CASCADE;
+DROP TABLE IF EXISTS fatafat_rounds     CASCADE;
 DROP TABLE IF EXISTS draw_answers       CASCADE;
 DROP TABLE IF EXISTS draws              CASCADE;
 DROP TABLE IF EXISTS entries            CASCADE;
@@ -542,3 +544,61 @@ CREATE TABLE legal_documents (
   PRIMARY KEY (doc_key, lang)
 );
 CREATE INDEX legal_documents_active_idx ON legal_documents (lang, is_active, sort_order);
+
+-- ===========================================================================
+-- Fatafat - the reaction game
+-- ===========================================================================
+--
+-- A round stores its SEED, not its questions. The bank is fixed content
+-- shipped in the repo, so ten question ids can always be rebuilt from one
+-- integer - which keeps a copy of the bank out of the database and lets any
+-- disputed round be replayed exactly as it was played.
+
+CREATE TABLE fatafat_rounds (
+  id             bigserial   PRIMARY KEY,
+  player_id      bigint      NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  seed           bigint      NOT NULL,
+  -- The ten questions, written down rather than derived. Choosing them depends
+  -- on what this player has already seen, so a seed alone would rebuild a
+  -- different round tomorrow and quietly rewrite every past report.
+  question_ids   text[]      NOT NULL DEFAULT '{}',
+  question_count int         NOT NULL DEFAULT 10,
+  time_limit_ms  int         NOT NULL DEFAULT 5000,
+  status         text        NOT NULL DEFAULT 'open'
+                             CHECK (status IN ('open','finished','abandoned')),
+  -- Stored per round, not per player. Somebody who switches to Hindi today
+  -- should still see last week's report in the English they played it in.
+  lang           text        NOT NULL DEFAULT 'en' CHECK (lang IN ('en','hi')),
+  score          numeric(8,2) NOT NULL DEFAULT 0,
+  -- Which question the server has handed out, and when. Correctness and
+  -- elapsed time are decided here, never by the page: a client that scores
+  -- itself is a client that can score itself perfectly.
+  current_seq    int         NOT NULL DEFAULT 0,
+  served_at      timestamptz,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  started_at     timestamptz,
+  finished_at    timestamptz
+);
+CREATE INDEX fatafat_rounds_player_idx ON fatafat_rounds (player_id, created_at DESC);
+
+CREATE TABLE fatafat_answers (
+  id           bigserial   PRIMARY KEY,
+  round_id     bigint      NOT NULL REFERENCES fatafat_rounds(id) ON DELETE CASCADE,
+  seq          int         NOT NULL,
+  question_id  text        NOT NULL,
+  mode         text        NOT NULL,
+  difficulty   int         NOT NULL,
+  -- Empty string means they touched nothing, which is the CORRECT answer to a
+  -- no-go. Null would read as "no data recorded" and lose that distinction.
+  tapped       text        NOT NULL DEFAULT '',
+  was_correct  boolean     NOT NULL,
+  -- The player's own stopwatch, and the server's. They disagree by the round
+  -- trip; keeping both is what makes an impossible claim visible later.
+  taken_ms     int,
+  server_ms    int,
+  twisted      boolean     NOT NULL DEFAULT false,
+  points       numeric(8,2) NOT NULL DEFAULT 0,
+  answered_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (round_id, seq)
+);
+CREATE INDEX fatafat_answers_round_idx ON fatafat_answers (round_id, seq);
