@@ -242,6 +242,49 @@ export const config = {
     messageText: SMS_MESSAGE_TEXT,
     entityId: SMS_ENTITY_ID,
     allowedRecipients: SMS_ALLOWED,
+
+    /**
+     * Numbers that always get the same code, and no SMS.
+     *
+     *   OTP_FIXED_CODES=919886122415:6416
+     *
+     * For the operator's own number: sign in to play or to check something on
+     * the live site without waiting for an SMS or spending a credit.
+     *
+     * ── Why this is configuration and not a constant in the source ────────
+     *
+     * A number-and-code pair written into a file goes into git history, on a
+     * remote, permanently - it cannot be rotated and it cannot be removed. In
+     * .env it is deletable in one line and was never published.
+     *
+     * ── What it does NOT bypass ───────────────────────────────────────────
+     *
+     * Everything else. The code is still issued into otp_requests on request,
+     * still expires, is still single-use, still counts wrong guesses against
+     * OTP_MAX_ATTEMPTS, and still requires the consent box. The only
+     * differences are that the value is predictable and no SMS is sent - so
+     * the blast radius is "somebody who knows both the number and the code can
+     * sign in as that player", not "the sign-in check is off".
+     *
+     * Every use is logged at WARN, and the admin health page reports it as a
+     * warning for as long as it is set, so it cannot be left on and forgotten.
+     */
+    fixedCodes: (() => {
+      const map = new Map();
+      for (const pair of list("OTP_FIXED_CODES")) {
+        const [rawPhone, rawCode] = String(pair).split(":");
+        const phone = String(rawPhone ?? "").replace(/\D/g, "");
+        const code = String(rawCode ?? "").trim();
+        if (!phone || !/^\d{4,8}$/.test(code)) {
+          problems.push(
+            `OTP_FIXED_CODES entry "${pair}" is not <phone>:<4-8 digits>`,
+          );
+          continue;
+        }
+        map.set(phone, code);
+      }
+      return map;
+    })(),
     length: int("OTP_LENGTH", 6, { min: 4, max: 8 }),
     ttlSeconds: int("OTP_TTL_SECONDS", 300, { min: 60, max: 1800 }),
     maxAttempts: int("OTP_MAX_ATTEMPTS", 5, { min: 1, max: 10 }),

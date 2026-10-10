@@ -245,6 +245,33 @@ window.__PLAY__ = ${blob({ mode, prefillCode, signInAvailable, otpLength })};
     });
   }
 
+  /*
+   * Journey beacon.
+   *
+   * Tells the server the steps it cannot otherwise see - the page opening, a
+   * number being typed, a code being typed, and giving up part-way. Without
+   * these, somebody who lands from an ad and leaves is completely invisible.
+   *
+   * Deliberately fire-and-forget: the catch swallows everything, so a blocked
+   * request, an ad blocker or an offline phone can never surface an error or
+   * hold up the thing the person is actually trying to do.
+   */
+  var reached = 'landed';
+  function beacon(step, extra){
+    reached = step;
+    var body = { step: step };
+    if (extra && extra.phone) body.phone = extra.phone;
+    if (extra && extra.at) body.at = extra.at;
+    try {
+      fetch(apiBase + '/public/play/track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        keepalive: true
+      }).catch(function(){});
+    } catch (e) { /* never */ }
+  }
+
   function show(el, msg, ok){
     if (!el) return;
     el.className = 'msg ' + (ok ? 'ok' : 'bad');
@@ -270,6 +297,10 @@ window.__PLAY__ = ${blob({ mode, prefillCode, signInAvailable, otpLength })};
     if (digits.length === 12 && digits.indexOf('91') === 0) digits = digits.slice(2);
     if (digits.length === 11 && digits.charAt(0) === '0') digits = digits.slice(1);
     if (digits.length !== 10) { show($('phoneMsg'), 'Enter your 10-digit mobile number.'); return; }
+
+    // Raised here rather than on keystrokes: one beacon when a complete,
+    // plausible number has been entered, not one per character typed.
+    beacon('phone_entered', { phone: digits });
 
     busy(btn, true, 'Sending...');
     show($('phoneMsg'), '');
@@ -308,7 +339,22 @@ window.__PLAY__ = ${blob({ mode, prefillCode, signInAvailable, otpLength })};
   function verify(){
     var btn = $('verifyBtn');
     var code = $('code').value.replace(/[^0-9]/g, '');
-    if (code.length !== CFG.otpLength) { show($('codeMsg'), 'Enter the ' + CFG.otpLength + '-digit code.'); return; }
+    /*
+     * A RANGE, not an exact length.
+     *
+     * This used to insist on exactly CFG.otpLength digits, which silently
+     * made standing codes (OTP_FIXED_CODES) unusable: a four-digit one was
+     * rejected here and never reached the server, so a correct code looked
+     * like a typo.
+     *
+     * The page is not told which numbers have a standing code, on purpose -
+     * that would let anyone discover it by asking for a code on a number they
+     * do not own. So the client check is only a courtesy against an obvious
+     * slip, and the server remains the one that decides.
+     */
+    if (code.length < 4 || code.length > 8) { show($('codeMsg'), 'Enter the ' + CFG.otpLength + '-digit code.'); return; }
+
+    beacon('code_entered');
 
     $('consentRow').classList.remove('flag');
     busy(btn, true, 'Checking...');
@@ -334,6 +380,10 @@ window.__PLAY__ = ${blob({ mode, prefillCode, signInAvailable, otpLength })};
   /* ── signed in ──────────────────────────────────────────────────────── */
 
   function enterHome(player, active, justSignedIn){
+    // Signed in and through: closing the tab from here is not abandoning
+    // anything, so stop the pagehide beacon reporting a drop-off that did
+    // not happen. The server already recorded the sign-in itself.
+    reached = 'done';
     $('hello').textContent = player && player.name ? ('Hi, ' + player.name) : 'Welcome';
     $('whoPhone').textContent = player ? player.phone : '';
 
@@ -426,6 +476,25 @@ ${bakraAvailable ? "  $('bakraBtn').onclick = bakra;" : ''}
   $('logoutBtn').onclick = logout;
 
   /* ── start ──────────────────────────────────────────────────────────── */
+
+  /*
+   * The arrival, and the giving up.
+   *
+   * 'landed' fires once per page load - this is the one that tells you a
+   * Status ad actually produced a visit rather than only an impression.
+   *
+   * 'abandoned' goes out on pagehide, carrying the furthest step they got to,
+   * which is the number you actually want: how many typed a mobile number and
+   * then left. pagehide rather than beforeunload because it is the only one
+   * mobile Safari reliably fires, and keepalive on the fetch is what lets the
+   * request survive the page being torn down. Nothing is sent once they are
+   * in - a player who reached the game has not abandoned anything.
+   */
+  beacon('landed');
+
+  window.addEventListener('pagehide', function(){
+    if (reached !== 'landed' && reached !== 'done') beacon('abandoned', { at: reached });
+  });
 
   if (!CFG.signInAvailable) { screen('unavailable'); return; }
 

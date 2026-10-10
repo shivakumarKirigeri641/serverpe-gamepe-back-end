@@ -27,13 +27,80 @@ import * as T from './mail-template.js';
  * `label` and `description` are what the admin panel shows.
  */
 export const TRIGGERS = [
+  /*
+    * The web journey, in order.
+    *
+    * Defaults are chosen by volume, not by importance. The first two fire for
+    * every single visitor including bounces, so instant delivery would bury
+    * everything else within a week - they go to the ten-minute digest, which
+    * arrives as ONE email containing the whole journey and is far easier to
+    * read than six separate ones. The milestones that mean a real person is
+    * really there are instant.
+    *
+    * Every one of these is switchable off / instant / digest in the panel.
+    */
   {
-    key: 'player.tapped',
-    label: 'Someone tapped the WhatsApp button',
-    description: 'A person messaged the bot — their first ever message, or a return after a while.',
-    icon: '🔔',
-    subject: 'someone tapped "Start on WhatsApp"',
-    // The highest-volume event by far. Instant would be unusable.
+    key: 'web.landed',
+    label: 'Someone opened the play page',
+    description: 'A visitor arrived — from a Status ad, a shared link, or the site. Fires for every visitor, including people who leave at once.',
+    icon: '👀',
+    subject: 'someone opened the play page',
+    mode: 'digest',
+  },
+  {
+    key: 'web.phone_entered',
+    label: 'Someone typed their mobile number',
+    description: 'They got as far as entering a number. They may not have asked for a code yet.',
+    icon: '⌨️',
+    subject: 'someone typed their mobile number',
+    mode: 'digest',
+  },
+  {
+    key: 'web.code_sent',
+    label: 'A sign-in code was sent',
+    description: 'They asked for a code and one went out. This is the step that costs money, so it is worth watching.',
+    icon: '✉️',
+    subject: 'a sign-in code was sent',
+    mode: 'digest',
+  },
+  {
+    key: 'web.code_entered',
+    label: 'Someone typed in a code',
+    description: 'A code was entered. Whether it was right is the next step.',
+    icon: '🔢',
+    subject: 'someone typed in a code',
+    mode: 'digest',
+  },
+  {
+    key: 'web.signed_in',
+    label: 'Someone signed in',
+    description: 'The code was right and they are in. A real person, on a real number.',
+    icon: '🔐',
+    subject: 'someone signed in',
+    mode: 'instant',
+  },
+  {
+    key: 'web.hosted',
+    label: 'Someone created a room',
+    description: 'A host made a room and has a link to share. They may not have started it.',
+    icon: '🏠',
+    subject: 'someone created a room',
+    mode: 'instant',
+  },
+  {
+    key: 'web.joined',
+    label: 'Someone joined a room',
+    description: 'A player took a seat — usually from a link a host shared.',
+    icon: '🪑',
+    subject: 'someone joined a room',
+    mode: 'instant',
+  },
+  {
+    key: 'web.abandoned',
+    label: 'Someone left part-way through',
+    description: 'A visitor got some distance into signing in and then left. This is where your drop-off actually is.',
+    icon: '🚪',
+    subject: 'someone left part-way through',
     mode: 'digest',
   },
   {
@@ -96,11 +163,11 @@ export const TRIGGERS = [
     mode: 'instant',
   },
   {
-    key: 'whatsapp.failing',
-    label: 'WhatsApp sending is failing',
-    description: 'Outbound messages are being rejected — usually an expired token. The bot is effectively down.',
+    key: 'sms.failing',
+    label: 'Sign-in SMS is failing',
+    description: 'Codes are being rejected by the provider, or the credit has run out. Nobody can sign in, and every page still looks perfectly fine - which is why this one is instant.',
     icon: '🚨',
-    subject: 'WhatsApp sending is FAILING',
+    subject: 'sign-in SMS is FAILING',
     mode: 'instant',
   },
   {

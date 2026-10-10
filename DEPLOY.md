@@ -51,6 +51,53 @@ Not required to boot, but each one is silently wrong if left empty.
 
 ---
 
+## Sign-in by SMS
+
+Play is on the web, so a mobile number and a one-time code are the **only** way
+in. If SMS is not configured the sign-in page says so and nobody can play — it
+is the one setting that silently turns the product off while every page still
+renders perfectly.
+
+| Key | Why |
+|---|---|
+| `FAST2SMSAPIKEY` | Your Fast2SMS key. Its presence is what selects the provider — with no key the server falls back to writing codes to the log, which only works on a local or tunnelled URL |
+| `FAST2SMS_ROUTE` | `dlt` for India. On this route `message` is the **Message ID**, not the text — Fast2SMS fills your approved template itself |
+| `FAST2SMS_SENDER_ID` | The approved DLT header, e.g. `SRVRPE` |
+| `FAST2SMS_DLT_MESSAGE_ID` | The approved template's numeric id |
+| `SMS_ALLOWED_RECIPIENTS` | Restricts outbound SMS to these numbers. Falls back to `WHATSAPP_ALLOWED_RECIPIENTS`. **Leave it empty in production** or real players cannot receive a code; set it while testing so a bug cannot text strangers |
+
+`FAST2SMS_ROUTE=dlt_manual` is also supported, for the case where the wording
+has to travel with the request rather than being looked up by id. It needs
+`FAST2SMS_MESSAGE_TEXT` (with `{#var#}` where the code goes, matching the
+approved template character for character) and `FAST2SMS_ENTITY_ID`.
+
+### A standing code for yourself
+
+```ini
+OTP_FIXED_CODES=919886122415:6416
+```
+
+Listed numbers always get the same code and **no SMS is sent** — so you can
+sign in to play, or check something on the live site, without waiting for a
+message or spending a credit.
+
+It is configuration rather than a constant in the source on purpose: a
+number-and-code pair written into a file goes into git history, on a remote,
+permanently — it cannot be rotated and it cannot be withdrawn.
+
+What it does **not** bypass is everything else. The code is still issued into
+`otp_requests` when requested, still expires after `OTP_TTL_SECONDS`, is still
+single-use, still counts wrong guesses against `OTP_MAX_ATTEMPTS`, and still
+requires the consent box. The only differences are that the value is
+predictable and no message is sent.
+
+Every use is logged at `WARN`, and the admin Live operations page reports it as
+a standing warning for as long as it is set — because an exception to
+authentication is exactly the kind of thing that gets added for an afternoon
+and found eighteen months later. Delete the line to turn it off.
+
+---
+
 ## The demo videos
 
 Four files live in `src/media/` and are served at

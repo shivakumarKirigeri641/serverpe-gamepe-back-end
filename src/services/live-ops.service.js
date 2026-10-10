@@ -333,6 +333,25 @@ export async function pinToPin({ hours = 24 } = {}) {
     add("Codes actually used", "warn", err.message);
   }
 
+  /*
+   * Fixed sign-in codes.
+   *
+   * Reported as a WARNING for as long as any are configured, and never as ok.
+   * A standing exception to authentication is exactly the kind of thing that
+   * gets added for an afternoon and found eighteen months later, so the
+   * dashboard keeps asking about it rather than letting it go quiet.
+   */
+  const fixedCount = config.otp.fixedCodes?.size ?? 0;
+  if (fixedCount) {
+    add(
+      "Fixed sign-in codes",
+      "warn",
+      `${fixedCount} number${fixedCount === 1 ? "" : "s"} can sign in with a standing code and no SMS` +
+        " - remove OTP_FIXED_CODES when you no longer need it",
+      { count: fixedCount },
+    );
+  }
+
   // --- mail ----------------------------------------------------------------
   add("Operator mail", config.mail.host ? "ok" : "warn",
     config.mail.host ? `${config.mail.host}:${config.mail.port}` : "not configured - no alerts or daily summary");

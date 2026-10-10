@@ -59,6 +59,22 @@ function hashCode(phone, code) {
     .digest("hex");
 }
 
+/**
+ * The standing code for this number, if one is configured, else null.
+ *
+ * Set through OTP_FIXED_CODES so it is never committed. Read on every call
+ * rather than captured at import, so the answer always reflects the current
+ * configuration rather than whatever was true when the process booted.
+ */
+function fixedCodeFor(phone) {
+  const map = config.otp.fixedCodes;
+  if (!map || map.size === 0) return null;
+  const digits = String(phone ?? "").replace(/\D/g, "");
+  // Accept the number written with or without the country code, because a
+  // human editing .env will write whichever one they are thinking of.
+  return map.get(digits) ?? map.get(digits.slice(-10)) ?? map.get("91" + digits.slice(-10)) ?? null;
+}
+
 const hashToken = (token) => createHash("sha256").update(token).digest("hex");
 
 /* ── asking for a code ─────────────────────────────────────────────────── */
@@ -120,13 +136,49 @@ export async function requestOtp({ phone: raw, ip }) {
     [phone],
   );
 
-  const code = String(randomInt(0, 10 ** o.length)).padStart(o.length, "0");
+  /*
+   * A fixed code, for the operator's own number.
+   *
+   * Issued through the SAME path as a random one - inserted into
+   * otp_requests, with the same expiry, the same single-use consumption and
+   * the same wrong-guess limit. Only two things differ: the value is
+   * predictable, and no SMS is sent. So nothing about the verification is
+   * weakened; the code is simply one the owner already knows.
+   */
+  const fixed = fixedCodeFor(phone);
+  const code = fixed ?? String(randomInt(0, 10 ** o.length)).padStart(o.length, "0");
+
   const { rows: [row] } = await query(
     `INSERT INTO otp_requests (phone, code_hash, expires_at, request_ip)
      VALUES ($1, $2, now() + make_interval(secs => $3), $4)
      RETURNING id`,
     [phone, hashCode(phone, code), o.ttlSeconds, ip ?? null],
   );
+
+  if (fixed) {
+    // WARN, not INFO: this is a standing exception and it should be visible
+    // in the log every single time it is used, not something you have to go
+    // looking for.
+    log.warn("OTP fixed code issued - no SMS sent", {
+      to: masked(phone),
+      hint: "configured in OTP_FIXED_CODES; remove that line to disable",
+    });
+    /*
+     * Deliberately indistinguishable from a real send.
+     *
+     * An earlier version returned `fixedCode: true` so the page could say
+     * "use your usual code". That is a nicer message and a worse idea: anyone
+     * may ask for a code on any number, so the flag let a stranger discover
+     * WHICH numbers have a standing code - and a 4-digit code is a much
+     * better target once you know it never changes. The operator knows their
+     * own code; nobody else needs a hint that one exists.
+     */
+    return {
+      sentTo: masked(phone),
+      expiresInSeconds: o.ttlSeconds,
+      resendAfterSeconds: o.resendAfterSeconds,
+    };
+  }
 
   try {
     await sendOtp(phone, code);
@@ -163,8 +215,13 @@ export async function verifyOtp({ phone: raw, code, displayName, consent, ip, us
   if (!phone) throw new AuthError("Enter a valid 10-digit Indian mobile number.", { code: "bad_phone" });
 
   const clean = String(code ?? "").replace(/\D/g, "");
-  if (clean.length !== config.otp.length) {
-    throw new AuthError(`Enter the ${config.otp.length}-digit code we sent you.`, { code: "bad_code" });
+  // A fixed code may be a different length from the configured one - 6416 is
+  // four digits while OTP_LENGTH is six - so the expected length is per
+  // number, not global. Without this the fixed code is rejected before it is
+  // ever compared, which looks exactly like a wrong code.
+  const expectedLength = (fixedCodeFor(phone) ?? "").length || config.otp.length;
+  if (clean.length !== expectedLength) {
+    throw new AuthError(`Enter the ${expectedLength}-digit code we sent you.`, { code: "bad_code" });
   }
 
   // Counting the attempt and reading the hash in one statement. Two guesses

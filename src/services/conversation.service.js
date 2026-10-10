@@ -117,13 +117,16 @@ async function route(player, event) {
 // --- Greeting and consent --------------------------------------------------
 
 async function handleGreeting(player) {
-  // Fired on the greeting, not on every inbound message, so a player working
-  // through a menu does not raise one alert per tap.
-  notify('player.tapped', {
-    title: `${displayNameFor(player)} messaged ${config.brandName}`,
-    lines: [`Number: +${player.wa_id}`, `Name: ${displayNameFor(player)}`],
-    playerId: player.id,
-  });
+  /*
+   * No alert here any more.
+   *
+   * This used to raise 'player.tapped'. That trigger is gone: the WhatsApp
+   * number is banned, so nothing can reach this function, and the equivalent
+   * signal on the web is the 'web.landed' step raised by journey.service.js.
+   *
+   * The whole WhatsApp conversation path is kept rather than deleted, because
+   * a number may yet be restored on appeal and this is working, tested code.
+   */
 
   if (!(await hasConsented(player.id))) {
     await sendText(player.wa_id, copy.greeting());

@@ -42,6 +42,7 @@ import {
   AuthError,
 } from "../services/player-auth.service.js";
 import { smsReady } from "../services/sms.service.js";
+import { recordStep, isClientStep } from "../services/journey.service.js";
 import { createRound } from "../services/fatafat.service.js";
 import { rateLimit } from "./rate-limit.js";
 import { webPlayPage } from "./web-play-page.js";
@@ -331,6 +332,42 @@ export function publicRoutes() {
   // same Wi-Fi, so they share one IP and all sign in within the same minute.
   const otpLimiter = rateLimit({ max: 60, windowMs: 60_000, name: "otp" });
 
+  /**
+   * The journey beacon: steps that happen in the browser and never reach the
+   * server on their own.
+   *
+   * Somebody opening the page, typing a number and then giving up makes no
+   * API call at all - so without this, the single most useful thing to know
+   * (where people stop) is invisible.
+   *
+   * Three things keep an endpoint anybody can POST to from becoming a
+   * problem: the step must be one of a short whitelist, the body is capped by
+   * the global 1mb JSON limit and nothing but `step` is read from it, and it
+   * is rate limited per address. It answers 204 regardless - a tracking call
+   * must never show a player an error, and must never tell a caller whether
+   * their payload was interesting.
+   */
+  const trackLimiter = rateLimit({ max: 120, windowMs: 60_000, name: "track" });
+
+  router.post(
+    "/public/play/track",
+    webOnly,
+    trackLimiter,
+    wrap(async (req, res) => {
+      const step = String(req.body?.step ?? "");
+      if (isClientStep(step)) {
+        await recordStep({
+          step,
+          req,
+          // Present only once they have typed one. Stored masked, never whole.
+          phone: req.body?.phone ?? null,
+          extra: step === "abandoned" && req.body?.at ? { gotAsFarAs: String(req.body.at).slice(0, 40) } : {},
+        });
+      }
+      res.sendStatus(204);
+    }),
+  );
+
   router.post(
     "/public/play/otp/request",
     webOnly,
@@ -338,6 +375,14 @@ export function publicRoutes() {
     wrap(async (req, res) => {
       try {
         const out = await requestOtp({ phone: req.body?.phone, ip: req.ip });
+        // Raised AFTER the code is away: a refusal (rate limit, bad number)
+        // is not a step somebody reached, and alerting on it would make the
+        // funnel read better than reality.
+        await recordStep({
+          step: "code_sent",
+          req,
+          phone: req.body?.phone,
+        });
         ok(res, out, 0);
       } catch (err) {
         if (err instanceof AuthError) return authFail(res, err);
@@ -368,6 +413,13 @@ export function publicRoutes() {
           source: "web",
           playerId: out.player.id,
           req,
+        });
+        await recordStep({
+          step: "signed_in",
+          req,
+          playerId: out.player.id,
+          phone: req.body?.phone,
+          extra: { who: out.isNew ? "new player" : "returning player" },
         });
         ok(res, out, 0);
       } catch (err) {
@@ -434,6 +486,14 @@ export function publicRoutes() {
         throw err;
       }
 
+      await recordStep({
+        step: "hosted",
+        req,
+        playerId: player.id,
+        gameId: game.id,
+        extra: { room: game.code, expecting: expectedPlayers },
+      });
+
       await recordEvent({
         type: "game.created",
         source: "web",
@@ -485,6 +545,19 @@ export function publicRoutes() {
         gameId: joined.game.id,
         properties: { code: joined.game.code },
       });
+
+      // Only a genuinely new seat is a journey step. Re-opening the same
+      // invite is the same person arriving twice, and counting it would make
+      // one player look like a filling room.
+      if (!joined.alreadyJoined) {
+        await recordStep({
+          step: "joined",
+          req,
+          playerId: player.id,
+          gameId: joined.game.id,
+          extra: { room: joined.game.code },
+        });
+      }
 
       ok(
         res,
