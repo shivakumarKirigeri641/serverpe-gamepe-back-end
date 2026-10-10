@@ -11,6 +11,38 @@
  */
 import { config } from '../config/env.js';
 import { QUERY_TYPES } from '../services/support.service.js';
+import { playChannel } from '../services/settings.service.js';
+
+/**
+ * Where "done" sends somebody.
+ *
+ * This used to be an unconditional "Back to WhatsApp" button. Once play moved
+ * to the web that was merely wrong; once the WhatsApp number was banned it
+ * became a button that takes a player who has just done us the favour of
+ * sending feedback to a number that no longer answers.
+ *
+ * So the destination follows the channel actually in use, and when there is
+ * nowhere sensible to send anyone the button is left out entirely - no button
+ * is better than a broken one.
+ */
+function returnLink() {
+  const play = playChannel();
+
+  if (play.whatsappEnabled && config.whatsapp.businessNumber) {
+    return `<a class="btn" id="backToWa" href="https://wa.me/${esc(config.whatsapp.businessNumber)}">
+      Back to WhatsApp
+    </a>`;
+  }
+
+  if (play.webEnabled) {
+    const root = String(config.publicRoot || '').replace(/\/+$/, '');
+    return `<a class="btn" id="backToPlay" href="${esc(root)}/public/play">
+      Back to the game
+    </a>`;
+  }
+
+  return '';
+}
 
 const SHELL = (title, body, script, extraCss = '') => `<!doctype html>
 <html lang="en">
@@ -89,9 +121,7 @@ ${extraCss}
     <h2 id="doneTitle">Thank you!</h2>
     <p id="doneText"></p>
     <div id="doneRef"></div>
-    <a class="btn" id="backToWa" href="https://wa.me/${esc(config.whatsapp.businessNumber)}">
-      Back to WhatsApp
-    </a>
+    ${returnLink()}
   </div>
 </div>
 <script>

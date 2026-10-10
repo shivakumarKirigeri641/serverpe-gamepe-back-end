@@ -29,7 +29,7 @@ import {
 import { recordEvent } from './tracking.service.js';
 import { notify } from './notification.service.js';
 import { STATES } from './conversation-states.js';
-import { maintenance } from './settings.service.js';
+import { maintenance, bakraEnabled } from './settings.service.js';
 import { broadcast } from './live.service.js';
 import { FEEDBACK_BUTTONS, reportUrl, announceGameAbandoned } from './gameover.service.js';
 import { saveRating, saveComment } from './feedback.service.js';
@@ -417,6 +417,13 @@ async function handleLeave(player) {
  * this game next to Tambola is that it starts the moment you tap.
  */
 async function startBakra(player) {
+  // Guarded here rather than only on the menu button, so every path in -
+  // button, typed word, or anything added later - gets the same answer.
+  if (!bakraEnabled()) {
+    log.info('bakra requested while disabled', { playerId: player.id });
+    return sendText(player.wa_id, copy.bakraUnavailable());
+  }
+
   // Their WhatsApp locale decides the first round's language; the toggle on
   // the page decides every one after that.
   const round = await createRound(player.id, /^hi/i.test(player.locale || '') ? 'hi' : 'en');

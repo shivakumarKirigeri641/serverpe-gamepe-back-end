@@ -1,28 +1,33 @@
 /**
  * Room codes and signed board links.
  */
-import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
-import { config } from '../config/env.js';
+import { createHmac, randomInt, timingSafeEqual } from "node:crypto";
+import { config } from "../config/env.js";
 
 // No O/0, I/1, S/5 - these get read aloud and typed by hand, and a code that
 // cannot be misheard is worth more than the extra entropy.
-const ALPHABET = 'ABCDEFGHJKLMNPQRTUVWXYZ23456789';
+const ALPHABET = "ABCDEFGHJKLMNPQRTUVWXYZ23456789";
 const CODE_LENGTH = 6;
 
 export function generateRoomCode() {
-  let out = '';
-  for (let i = 0; i < CODE_LENGTH; i++) out += ALPHABET[randomInt(0, ALPHABET.length)];
+  let out = "";
+  for (let i = 0; i < CODE_LENGTH; i++)
+    out += ALPHABET[randomInt(0, ALPHABET.length)];
   return out;
 }
 
 /** Players type these by hand, so accept lowercase and stray spaces. */
 export function normaliseRoomCode(input) {
-  return String(input ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return String(input ?? "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
 }
 
 export function looksLikeRoomCode(input) {
   const code = normaliseRoomCode(input);
-  return code.length === CODE_LENGTH && [...code].every((c) => ALPHABET.includes(c));
+  return (
+    code.length === CODE_LENGTH && [...code].every((c) => ALPHABET.includes(c))
+  );
 }
 
 /**
@@ -38,7 +43,7 @@ export function signBoardToken(gameId, playerId) {
 }
 
 export function verifyBoardToken(token) {
-  const parts = String(token ?? '').split('.');
+  const parts = String(token ?? "").split(".");
   if (parts.length !== 3) return null;
 
   const [gameId, playerId, signature] = parts;
@@ -57,19 +62,32 @@ export function verifyBoardToken(token) {
 }
 
 function sign(body) {
-  return createHmac('sha256', config.boardLinkSecret).update(body).digest('base64url').slice(0, 32);
+  return createHmac("sha256", config.boardLinkSecret)
+    .update(body)
+    .digest("base64url")
+    .slice(0, 32);
 }
 
 /** The URL a player opens to play. */
-export function boardUrl(gameId, playerId) {
-  return `${config.publicRoot}/board/${signBoardToken(gameId, playerId)}`;
+export function boardUrl(gameId, playerId, baseRoot = null) {
+  const root = String(baseRoot || config.publicRoot).replace(/\/+$/, "");
+  return `${root}/board/${signBoardToken(gameId, playerId)}`;
 }
 
 /**
  * The invite the host forwards. Tapping it opens WhatsApp with the join
  * message already typed, so a player never has to copy a code by hand.
  */
-export function inviteUrl(code) {
+export function inviteUrl(code, modeOverride = null, baseRoot = null) {
+  const mode = String(
+    modeOverride || config.playChannelMode || "whatsapp",
+  ).toLowerCase();
+  const root = String(baseRoot || config.publicRoot).replace(/\/+$/, "");
+  const webUrl = `${root}/public/play?code=${encodeURIComponent(code)}`;
+
+  if (mode === "web") return webUrl;
+  if (!config.whatsapp.businessNumber) return webUrl;
+
   return `https://wa.me/${config.whatsapp.businessNumber}?text=${encodeURIComponent(`JOIN ${code}`)}`;
 }
 
@@ -111,11 +129,11 @@ export function signRoundToken(roundId, playerId) {
 }
 
 export function verifyRoundToken(token) {
-  const parts = String(token ?? '').split('.');
+  const parts = String(token ?? "").split(".");
   if (parts.length !== 3) return null;
 
   const [rawRound, playerId, signature] = parts;
-  if (!rawRound.startsWith('f')) return null;
+  if (!rawRound.startsWith("f")) return null;
   const roundId = rawRound.slice(1);
 
   const expected = sign(`fatafat:${roundId}.${playerId}`);

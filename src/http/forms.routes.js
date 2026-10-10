@@ -13,6 +13,7 @@ import { verifyBoardToken } from '../utils/code.js';
 import { demoPage } from './demo-page.js';
 import { rateLimit } from './rate-limit.js';
 import { feedbackPage, supportPage } from './forms-page.js';
+import { playChannel } from '../services/settings.service.js';
 import { getPlayerById, displayNameFor } from '../services/player.service.js';
 import { getGameById } from '../services/game.service.js';
 import { saveRating, saveComment } from '../services/feedback.service.js';
@@ -146,5 +147,9 @@ min-height:100vh;margin:0;background:#16151a;color:#e8e6e3;text-align:center;pad
 h1{color:#d4a537;font-size:1.25rem}p{opacity:.7}
 a{color:#d4a537}</style>
 <h1>${title}</h1><p>${detail}</p>
-<p><a href="https://wa.me/${config.whatsapp.businessNumber}">Open WhatsApp</a></p>`;
+${
+  playChannel().whatsappEnabled && config.whatsapp.businessNumber
+    ? `<p><a href="https://wa.me/${config.whatsapp.businessNumber}">Open WhatsApp</a></p>`
+    : `<p><a href="${String(config.publicRoot || "").replace(/\/+$/, "")}/public/play">Back to the game</a></p>`
+}`;
 }

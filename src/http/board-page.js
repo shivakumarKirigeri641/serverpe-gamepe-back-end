@@ -10,7 +10,7 @@
  * whatever the server sends, and on any doubt it re-fetches the whole
  * snapshot rather than trying to patch what it thinks it missed.
  */
-import { config } from '../config/env.js';
+import { config } from "../config/env.js";
 
 export function boardPage() {
   return `<!doctype html>
@@ -791,14 +791,16 @@ details.called[open] summary::after{transform:rotate(180deg)}
       // The link, visibly, with one tap to copy it. A host who cannot find the
       // link cannot fill the room, and reading a URL aloud is not an option.
       if (s.invite) {
+        var shareHint = s.playMode === 'web'
+          ? 'Share this link with your players. They tap it, enter their name, and they are in.'
+          : 'Paste it into your WhatsApp group. They tap it, accept the terms, and they are in.';
         html += '<div class="invite">' +
           '<div class="invite-label">Share this link with your players</div>' +
           '<div class="invite-row">' +
             '<code id="inviteLink">' + esc(s.invite) + '</code>' +
             '<button class="copy" id="copyBtn">Copy</button>' +
           '</div>' +
-          '<div class="invite-hint">Paste it into your WhatsApp group. They tap it, ' +
-            'accept the terms, and they are in.</div>' +
+          '<div class="invite-hint">' + shareHint + '</div>' +
         '</div>';
       }
 
@@ -909,6 +911,7 @@ details.called[open] summary::after{transform:rotate(180deg)}
     claimbar.classList.add('hidden');
     if (tick) clearInterval(tick);
     hideCountdown();
+    var canReturnToWhatsApp = state.playMode !== 'web' && !!state.businessNumber;
     var r = state.results || {prizes:[], players:[]};
     var fullHouse = state.game.endedReason === 'full_house';
     var abandoned = state.game.endedReason === 'abandoned';
@@ -948,7 +951,7 @@ details.called[open] summary::after{transform:rotate(180deg)}
     if (abandoned) {
       html += '<div class="card" style="text-align:center">' +
         '<div style="font-size:38px;line-height:1;margin-bottom:6px">🛑</div>' +
-        '<h2>Game ended early</h2>' +
+        '<h2>Game ended</h2>' +
         '<div class="muted">' + (lastWinner && lastWinner.leaver
           ? esc(lastWinner.leaver) + ' left, which left too few players to carry on.'
           : 'Too few players were left to carry on.') +
@@ -988,11 +991,12 @@ details.called[open] summary::after{transform:rotate(180deg)}
 
     html += '<div class="card" style="text-align:center">' +
       '<h2>Thanks for playing!</h2>' +
-      '<div class="muted">Head back to WhatsApp — we have sent you your game report, ' +
-      'and you can rate the game there.</div>' +
-      '<a class="btn" style="display:block;margin-top:12px;text-decoration:none" ' +
-      'href="https://wa.me/' + esc(state.businessNumber || '') + '">Back to WhatsApp</a>' +
-      '</div>' + ticketHtml();
+      (canReturnToWhatsApp
+        ? '<div class="muted">Head back to WhatsApp — we have sent you your game report, and you can rate the game there.</div>' +
+          '<a class="btn" style="display:block;margin-top:12px;text-decoration:none" ' +
+          'href="https://wa.me/' + esc(state.businessNumber || '') + '">Back to WhatsApp</a>'
+        : '<div class="muted">Your report is ready on this page. Share the next invite link to start another round.</div>') +
+      '</div>' + (abandoned ? '' : ticketHtml());
 
     setView(html, 'over');
     if (fullHouse && champ && !abandoned) confetti();
@@ -1002,7 +1006,7 @@ details.called[open] summary::after{transform:rotate(180deg)}
     // message, or the "See my report" link - came deliberately to READ the
     // results, and bouncing them out would be the opposite of what they asked
     // for.
-    if (!fullHouse && !abandoned && sawItRunning) offerReturn();
+    if (canReturnToWhatsApp && !fullHouse && !abandoned && sawItRunning) offerReturn();
   }
 
   /**
@@ -1448,7 +1452,11 @@ details.called[open] summary::after{transform:rotate(180deg)}
 }
 
 function esc(value) {
-  return String(value).replace(/[&<>"']/g, (c) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-  ));
+  return String(value).replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ],
+  );
 }

@@ -8,6 +8,8 @@
 -- Switch to additive migrations once there are real players to protect.
 -- ===========================================================================
 
+DROP TABLE IF EXISTS player_sessions    CASCADE;
+DROP TABLE IF EXISTS otp_requests       CASCADE;
 DROP TABLE IF EXISTS legal_documents    CASCADE;
 DROP TABLE IF EXISTS notification_log   CASCADE;
 DROP TABLE IF EXISTS notification_queue CASCADE;
@@ -41,9 +43,11 @@ DROP TABLE IF EXISTS players            CASCADE;
 
 CREATE TABLE players (
   id            bigserial PRIMARY KEY,
-  wa_id         text        NOT NULL UNIQUE,   -- WhatsApp number, digits only
+  wa_id         text        NOT NULL UNIQUE,   -- WhatsApp number or generated web id
   display_name  text,
   locale        text,
+  channel       text        NOT NULL DEFAULT 'whatsapp'
+                CHECK (channel IN ('whatsapp','web')),
   is_blocked    boolean     NOT NULL DEFAULT false,
   created_at    timestamptz NOT NULL DEFAULT now(),
   last_seen_at  timestamptz NOT NULL DEFAULT now(),
@@ -602,3 +606,42 @@ CREATE TABLE fatafat_answers (
   UNIQUE (round_id, seq)
 );
 CREATE INDEX fatafat_answers_round_idx ON fatafat_answers (round_id, seq);
+
+-- ===========================================================================
+-- Web play: sign-in by mobile number and one-time code
+-- ===========================================================================
+--
+-- The number is the identity, stored in players.wa_id exactly as WhatsApp
+-- stores it (country code and digits). Somebody who has played over WhatsApp
+-- and then signs in on the web is therefore the same player with the same
+-- history - they proved they hold the number, which is all WhatsApp proved.
+
+CREATE TABLE otp_requests (
+  id           bigserial   PRIMARY KEY,
+  phone        text        NOT NULL,
+  -- Never the code itself. A database read must not be enough to sign in as
+  -- somebody; the hash is bound to the number, so it cannot be replayed
+  -- against a different one either.
+  code_hash    text        NOT NULL,
+  attempts     int         NOT NULL DEFAULT 0,
+  expires_at   timestamptz NOT NULL,
+  consumed_at  timestamptz,
+  request_ip   text,
+  created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX otp_requests_phone_idx ON otp_requests (phone, created_at DESC);
+CREATE INDEX otp_requests_ip_idx    ON otp_requests (request_ip, created_at DESC);
+
+CREATE TABLE player_sessions (
+  id           bigserial   PRIMARY KEY,
+  token_hash   text        NOT NULL UNIQUE,
+  player_id    bigint      NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  request_ip   text,
+  user_agent   text,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz NOT NULL DEFAULT now(),
+  expires_at   timestamptz NOT NULL,
+  revoked_at   timestamptz
+);
+CREATE INDEX player_sessions_player_idx ON player_sessions (player_id);
+CREATE INDEX player_sessions_expiry_idx ON player_sessions (expires_at);

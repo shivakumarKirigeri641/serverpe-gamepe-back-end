@@ -480,13 +480,7 @@ async function main() {
       console.log('    ' + name);
       console.log('      ' + dim(statement));
     }
-    if (apply) {
-      console.log('\n  creating them on ' + bold(db.name) + ' ' +
-        dim('(CONCURRENTLY - safe while games are running)') + ' ...');
-      await applyIndexes(missingIndexes);
-    } else {
-      console.log('\n  ' + dim('create them with:  npm run db:migrate'));
-    }
+    if (!apply) console.log('\n  ' + dim('create them with:  npm run db:migrate'));
   }
 
   if (!problems) {
@@ -519,6 +513,15 @@ async function main() {
     } else {
       await applyMigration(body, db.name);
     }
+  }
+
+  // Indexes last. A new table arrives in the migration above, and an index on
+  // it cannot be built until the table exists - creating them first worked only
+  // for as long as every new index happened to sit on a table already there.
+  if (apply && missingIndexes.size) {
+    console.log('\n  creating indexes on ' + bold(db.name) + ' ' +
+      dim('(CONCURRENTLY - safe while games are running)') + ' ...');
+    await applyIndexes(missingIndexes);
   }
 
   await closePool();

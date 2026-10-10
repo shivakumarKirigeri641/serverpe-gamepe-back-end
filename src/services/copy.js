@@ -5,7 +5,7 @@
  * the button ids matter, and those live in BUTTONS below.
  */
 import { config } from '../config/env.js';
-import { trialEndsAt } from './settings.service.js';
+import { trialEndsAt, bakraEnabled } from './settings.service.js';
 
 /** Button ids are the contract between what we send and what comes back. */
 export const BUTTONS = {
@@ -61,6 +61,17 @@ export const copy = {
   consentDone: () => `Thank you! You're all set. 🎫`,
 
   menu: () => `What would you like to do?`,
+
+  /**
+   * Said when somebody asks for Tap Bakra while it is switched off.
+   *
+   * No apology and no "coming soon" - a date we have not decided is a promise
+   * we would break. It names what IS available instead, because a dead end is
+   * the one thing a menu must never produce.
+   */
+  bakraUnavailable: () =>
+    `Tap Bakra is taking a break just now.\n\n` +
+    `Tambola is still on - tap *Tambola* to start a game with your friends.`,
 
   askPlayerCount: (min, max) =>
     `How many players will be joining, including you?\n\n` +
@@ -312,12 +323,23 @@ Type *hi* to start.`,
  * "Join game" moved into More. Players normally arrive through the host's
  * shared link rather than by typing a code, so it does not deserve one of the
  * three slots that a game does.
+ *
+ * With Tap Bakra switched off its slot is given to Join rather than left
+ * empty. A two-button menu would read as something missing; this reads as a
+ * menu that was always two games short of three.
  */
-export const menuButtons = () => [
-  { id: BUTTONS.MENU_PLAY, title: 'Tambola' },
-  { id: BUTTONS.MENU_BAKRA, title: 'Tap Bakra' },
-  { id: BUTTONS.MENU_OPTIONS, title: 'More' },
-];
+export const menuButtons = () =>
+  bakraEnabled()
+    ? [
+        { id: BUTTONS.MENU_PLAY, title: 'Tambola' },
+        { id: BUTTONS.MENU_BAKRA, title: 'Tap Bakra' },
+        { id: BUTTONS.MENU_OPTIONS, title: 'More' },
+      ]
+    : [
+        { id: BUTTONS.MENU_PLAY, title: 'Tambola' },
+        { id: BUTTONS.MENU_JOIN, title: 'Join game' },
+        { id: BUTTONS.MENU_OPTIONS, title: 'More' },
+      ];
 
 export const consentButtons = () => [
   { id: BUTTONS.CONSENT_AGREE, title: 'Agree & continue' },
