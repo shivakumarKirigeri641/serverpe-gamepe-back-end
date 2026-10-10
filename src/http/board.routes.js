@@ -8,13 +8,14 @@
 import { Router } from "express";
 import { log } from "../utils/logger.js";
 import { config } from "../config/env.js";
-import { verifyBoardToken, inviteUrl } from "../utils/code.js";
+import { verifyBoardToken, inviteUrl, feedbackUrl } from "../utils/code.js";
 import { boardPage } from "./board-page.js";
 import { reportPage } from "./report-page.js";
 import { historyPage } from "./history-page.js";
 import {
   playerReport,
   announceGameAbandoned,
+  reportUrl,
 } from "../services/gameover.service.js";
 import { playerHistory } from "../services/history.service.js";
 import {
@@ -512,6 +513,22 @@ async function snapshot(gameId, playerId, publicRoot = null) {
       game.host_player_id === playerId
         ? inviteUrl(game.code, play.mode, publicRoot)
         : null,
+
+    /*
+     * Where this player's report and feedback form live.
+     *
+     * These used to be delivered by WhatsApp when the game ended, so the
+     * board never needed them. With play on the web the message never comes,
+     * and the end screen was left telling people "your report is ready on
+     * this page" while showing no way to open it - which is worse than
+     * saying nothing, because they go looking for something that is not
+     * there.
+     *
+     * Signed per player exactly like the board link, so one cannot be edited
+     * into somebody else's report.
+     */
+    reportUrl: reportUrl(gameId, playerId),
+    feedbackUrl: feedbackUrl(playerId, gameId),
     hostName: lobby.players.find((p) => p.isHost)?.name ?? null,
   };
 

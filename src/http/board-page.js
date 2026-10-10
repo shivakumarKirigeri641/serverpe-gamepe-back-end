@@ -995,7 +995,25 @@ details.called[open] summary::after{transform:rotate(180deg)}
         ? '<div class="muted">Head back to WhatsApp — we have sent you your game report, and you can rate the game there.</div>' +
           '<a class="btn" style="display:block;margin-top:12px;text-decoration:none" ' +
           'href="https://wa.me/' + esc(state.businessNumber || '') + '">Back to WhatsApp</a>'
-        : '<div class="muted">Your report is ready on this page. Share the next invite link to start another round.</div>') +
+        /*
+         * On the web there is no message carrying the report and the rating
+         * prompt, so the board has to offer both itself.
+         *
+         * This branch used to be one sentence - "your report is ready on this
+         * page" - with nothing to open. People went looking for something
+         * that was not there, which is worse than having said nothing at all.
+         */
+        : '<div class="muted">Your report is ready. Open it to see your ticket, ' +
+            'every number called and how you marked it.</div>' +
+          (state.reportUrl
+            ? '<a class="btn" style="display:block;margin-top:12px;text-decoration:none" ' +
+              'href="' + esc(state.reportUrl) + '">See my report</a>'
+            : '') +
+          (state.feedbackUrl
+            ? '<a class="btn ghost" style="display:block;margin-top:8px;text-decoration:none" ' +
+              'href="' + esc(state.feedbackUrl) + '">Rate this game</a>'
+            : '') +
+          '<div class="muted" style="margin-top:12px">Share the invite link to start another round.</div>') +
       '</div>' + (abandoned ? '' : ticketHtml());
 
     setView(html, 'over');
