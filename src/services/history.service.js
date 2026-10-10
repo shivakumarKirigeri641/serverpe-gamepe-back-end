@@ -126,7 +126,11 @@ async function accuracy(playerId) {
   const r = rows[0];
   return {
     ...r,
-    accuracyPct: pct(r.correct, r.decisions),
+    // Over what they answered. Dividing by every number offered - which is
+    // what this did - scored a player whose board dropped out as inaccurate
+    // rather than as absent, and the same figure feeds the improvement
+    // section below, so a bad signal looked like a decline in skill.
+    accuracyPct: pct(r.correct, r.answered),
     responsePct: pct(r.answered, r.decisions),
   };
 }
@@ -158,6 +162,9 @@ async function games(playerId, limit = 500) {
              WHERE a.game_id = g.id AND a.player_id = $1)            AS decisions,
            (SELECT count(*)::int FROM draw_answers a
              WHERE a.game_id = g.id AND a.player_id = $1
+               AND a.answer <> 'no_response')                           AS answered,
+           (SELECT count(*)::int FROM draw_answers a
+             WHERE a.game_id = g.id AND a.player_id = $1
                AND a.was_correct)                                    AS correct,
            (SELECT count(*)::int FROM draw_answers a
              WHERE a.game_id = g.id AND a.player_id = $1
@@ -180,7 +187,7 @@ async function games(playerId, limit = 500) {
 
   return rows.map((r) => ({
     ...r,
-    accuracyPct: pct(r.correct, r.decisions),
+    accuracyPct: pct(r.correct, r.answered),
     prizeList: r.prize_list ? r.prize_list.split(', ') : [],
   }));
 }
@@ -202,6 +209,7 @@ async function leaderboard(playerId) {
            p.wa_id,
            count(DISTINCT gp.game_id)::int                             AS games_together,
            count(*) FILTER (WHERE a.was_correct)::int                  AS correct,
+           count(*) FILTER (WHERE a.answer <> 'no_response')::int      AS answered,
            count(a.*)::int                                             AS decisions,
            (SELECT count(*)::int FROM claims c
              WHERE c.player_id = p.id AND c.status = 'awarded'
@@ -220,7 +228,7 @@ async function leaderboard(playerId) {
   return rows.map((r) => ({
     ...r,
     isYou: r.id === playerId,
-    accuracyPct: pct(r.correct, r.decisions),
+    accuracyPct: pct(r.correct, r.answered),
   }));
 }
 
@@ -298,8 +306,8 @@ function improvement(gameList) {
   const avg = (rows, key) =>
     rows.reduce((sum, r) => sum + Number(r[key] || 0), 0) / (rows.length || 1);
 
-  const recentAcc = pct(avg(recent, 'correct'), avg(recent, 'decisions'));
-  const earlyAcc = pct(avg(early, 'correct'), avg(early, 'decisions'));
+  const recentAcc = pct(avg(recent, 'correct'), avg(recent, 'answered'));
+  const earlyAcc = pct(avg(early, 'correct'), avg(early, 'answered'));
 
   return {
     enough: true,
@@ -342,7 +350,7 @@ function advice({ acc, tot, pz, imp }) {
       `Keeping the board open during the game is the single biggest thing you can change.`,
     );
   }
-  if (acc.missed > 0 && pct(acc.missed, acc.decisions) >= 10) {
+  if (acc.missed > 0 && pct(acc.missed, acc.answered) >= 10) {
     out.push(
       `${acc.missed} number${acc.missed === 1 ? ' was' : 's were'} on your ticket and went ` +
       `unmarked. Those are the ones that cost prizes.`,

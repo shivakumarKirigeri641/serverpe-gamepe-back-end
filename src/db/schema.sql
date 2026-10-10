@@ -8,6 +8,9 @@
 -- Switch to additive migrations once there are real players to protect.
 -- ===========================================================================
 
+DROP TABLE IF EXISTS player_sessions    CASCADE;
+DROP TABLE IF EXISTS otp_requests       CASCADE;
+DROP TABLE IF EXISTS legal_documents    CASCADE;
 DROP TABLE IF EXISTS notification_log   CASCADE;
 DROP TABLE IF EXISTS notification_queue CASCADE;
 DROP TABLE IF EXISTS notification_settings CASCADE;
@@ -22,6 +25,8 @@ DROP TABLE IF EXISTS analytics_events   CASCADE;
 DROP TABLE IF EXISTS board_sessions     CASCADE;
 DROP TABLE IF EXISTS feedback           CASCADE;
 DROP TABLE IF EXISTS claims             CASCADE;
+DROP TABLE IF EXISTS fatafat_answers    CASCADE;
+DROP TABLE IF EXISTS fatafat_rounds     CASCADE;
 DROP TABLE IF EXISTS draw_answers       CASCADE;
 DROP TABLE IF EXISTS draws              CASCADE;
 DROP TABLE IF EXISTS entries            CASCADE;
@@ -38,9 +43,11 @@ DROP TABLE IF EXISTS players            CASCADE;
 
 CREATE TABLE players (
   id            bigserial PRIMARY KEY,
-  wa_id         text        NOT NULL UNIQUE,   -- WhatsApp number, digits only
+  wa_id         text        NOT NULL UNIQUE,   -- WhatsApp number or generated web id
   display_name  text,
   locale        text,
+  channel       text        NOT NULL DEFAULT 'whatsapp'
+                CHECK (channel IN ('whatsapp','web')),
   is_blocked    boolean     NOT NULL DEFAULT false,
   created_at    timestamptz NOT NULL DEFAULT now(),
   last_seen_at  timestamptz NOT NULL DEFAULT now(),
@@ -175,6 +182,9 @@ CREATE TABLE draw_answers (
   UNIQUE (game_id, seq, player_id)                -- one answer per number
 );
 CREATE INDEX draw_answers_game_seq_idx ON draw_answers (game_id, seq);
+-- The panel counts a player's correct answers for every row of the players
+-- list. Without this each row scans the whole table.
+CREATE INDEX draw_answers_player_idx  ON draw_answers (player_id);
 
 CREATE TABLE claims (
   id          bigserial   PRIMARY KEY,
@@ -507,3 +517,131 @@ CREATE TABLE notification_log (
   sent_at     timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX notification_log_idx ON notification_log (sent_at DESC);
+
+/*
+ * The policies, as data.
+ *
+ * They used to be hardcoded in a page template, which made them impossible
+ * to correct without a deploy - and Meta, Razorpay and the app stores all
+ * review these pages and ask for changes. One row per document per language.
+ *
+ *  is plain text with blank-line paragraphs and "- " bullets. Not HTML:
+ * these are rendered into three different surfaces (the marketing site, the
+ * in-WhatsApp page, and the admin editor), and a stored HTML blob would be an
+ * injection risk in all three.
+ */
+CREATE TABLE legal_documents (
+  doc_key          text        NOT NULL,
+  lang             text        NOT NULL DEFAULT 'en',
+  title            text        NOT NULL,
+  summary          text,
+  body             text        NOT NULL,
+  -- Bumped by hand when the words change materially. Consent is recorded
+  -- against this, so changing it asks every player to agree again.
+  version          text        NOT NULL,
+  -- Whether accepting this is required before playing. Only the terms are.
+  requires_consent boolean     NOT NULL DEFAULT false,
+  is_active        boolean     NOT NULL DEFAULT true,
+  sort_order       int         NOT NULL DEFAULT 100,
+  updated_at       timestamptz NOT NULL DEFAULT now(),
+  updated_by       text,
+  PRIMARY KEY (doc_key, lang)
+);
+CREATE INDEX legal_documents_active_idx ON legal_documents (lang, is_active, sort_order);
+
+-- ===========================================================================
+-- Fatafat - the reaction game
+-- ===========================================================================
+--
+-- A round stores its SEED, not its questions. The bank is fixed content
+-- shipped in the repo, so ten question ids can always be rebuilt from one
+-- integer - which keeps a copy of the bank out of the database and lets any
+-- disputed round be replayed exactly as it was played.
+
+CREATE TABLE fatafat_rounds (
+  id             bigserial   PRIMARY KEY,
+  player_id      bigint      NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  seed           bigint      NOT NULL,
+  -- The ten questions, written down rather than derived. Choosing them depends
+  -- on what this player has already seen, so a seed alone would rebuild a
+  -- different round tomorrow and quietly rewrite every past report.
+  question_ids   text[]      NOT NULL DEFAULT '{}',
+  question_count int         NOT NULL DEFAULT 10,
+  time_limit_ms  int         NOT NULL DEFAULT 5000,
+  status         text        NOT NULL DEFAULT 'open'
+                             CHECK (status IN ('open','finished','abandoned')),
+  -- Stored per round, not per player. Somebody who switches to Hindi today
+  -- should still see last week's report in the English they played it in.
+  lang           text        NOT NULL DEFAULT 'en' CHECK (lang IN ('en','hi')),
+  score          numeric(8,2) NOT NULL DEFAULT 0,
+  -- Which question the server has handed out, and when. Correctness and
+  -- elapsed time are decided here, never by the page: a client that scores
+  -- itself is a client that can score itself perfectly.
+  current_seq    int         NOT NULL DEFAULT 0,
+  served_at      timestamptz,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  started_at     timestamptz,
+  finished_at    timestamptz
+);
+CREATE INDEX fatafat_rounds_player_idx ON fatafat_rounds (player_id, created_at DESC);
+
+CREATE TABLE fatafat_answers (
+  id           bigserial   PRIMARY KEY,
+  round_id     bigint      NOT NULL REFERENCES fatafat_rounds(id) ON DELETE CASCADE,
+  seq          int         NOT NULL,
+  question_id  text        NOT NULL,
+  mode         text        NOT NULL,
+  difficulty   int         NOT NULL,
+  -- Empty string means they touched nothing, which is the CORRECT answer to a
+  -- no-go. Null would read as "no data recorded" and lose that distinction.
+  tapped       text        NOT NULL DEFAULT '',
+  was_correct  boolean     NOT NULL,
+  -- The player's own stopwatch, and the server's. They disagree by the round
+  -- trip; keeping both is what makes an impossible claim visible later.
+  taken_ms     int,
+  server_ms    int,
+  twisted      boolean     NOT NULL DEFAULT false,
+  points       numeric(8,2) NOT NULL DEFAULT 0,
+  answered_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (round_id, seq)
+);
+CREATE INDEX fatafat_answers_round_idx ON fatafat_answers (round_id, seq);
+
+-- ===========================================================================
+-- Web play: sign-in by mobile number and one-time code
+-- ===========================================================================
+--
+-- The number is the identity, stored in players.wa_id exactly as WhatsApp
+-- stores it (country code and digits). Somebody who has played over WhatsApp
+-- and then signs in on the web is therefore the same player with the same
+-- history - they proved they hold the number, which is all WhatsApp proved.
+
+CREATE TABLE otp_requests (
+  id           bigserial   PRIMARY KEY,
+  phone        text        NOT NULL,
+  -- Never the code itself. A database read must not be enough to sign in as
+  -- somebody; the hash is bound to the number, so it cannot be replayed
+  -- against a different one either.
+  code_hash    text        NOT NULL,
+  attempts     int         NOT NULL DEFAULT 0,
+  expires_at   timestamptz NOT NULL,
+  consumed_at  timestamptz,
+  request_ip   text,
+  created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX otp_requests_phone_idx ON otp_requests (phone, created_at DESC);
+CREATE INDEX otp_requests_ip_idx    ON otp_requests (request_ip, created_at DESC);
+
+CREATE TABLE player_sessions (
+  id           bigserial   PRIMARY KEY,
+  token_hash   text        NOT NULL UNIQUE,
+  player_id    bigint      NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  request_ip   text,
+  user_agent   text,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz NOT NULL DEFAULT now(),
+  expires_at   timestamptz NOT NULL,
+  revoked_at   timestamptz
+);
+CREATE INDEX player_sessions_player_idx ON player_sessions (player_id);
+CREATE INDEX player_sessions_expiry_idx ON player_sessions (expires_at);

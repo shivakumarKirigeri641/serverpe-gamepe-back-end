@@ -110,8 +110,11 @@ table.log tr:last-child td{border-bottom:0}
   var called = {};
   d.timeline.forEach(function(t){ called[t.value] = true; });
 
-  var acc = d.accuracy || {correct:0,total:0,missed:0};
-  var pct = acc.total ? Math.round(acc.correct/acc.total*100) : 0;
+  var acc = d.accuracy ||
+    {correct:0,total:0,missed:0,wrongTaps:0,noResponse:0,answered:0};
+  // Out of what they answered. A number nobody responded to is reported on its
+  // own below rather than folded into an accuracy figure it would drag down.
+  var pct = acc.answered ? Math.round(acc.correct/acc.answered*100) : 0;
   var mineWon = d.prizes.filter(function(p){ return p.winner === d.you.name; });
 
   var h = '';
@@ -130,11 +133,24 @@ table.log tr:last-child td{border-bottom:0}
   }
 
   h += '<div class="big">' +
-    kpi(acc.correct + '/' + acc.total, 'Marked correctly') +
+    kpi(acc.correct + '/' + acc.answered, 'Marked correctly') +
     kpi(pct + '%', 'Accuracy') +
-    kpi(acc.missed, 'Never answered') +
     kpi(mineWon.length, 'Prizes won') +
   '</div>';
+
+  // The three ways a number can go wrong, kept apart because they mean
+  // different things: one cost you a prize, one cost you nothing, and one may
+  // not have been your doing at all.
+  h += '<div class="card"><h2>Where the numbers went</h2><dl>' +
+    row('On your ticket, and you marked it', acc.correct) +
+    row('On your ticket, but you said no', acc.missed) +
+    row('Marked, but not on your ticket', acc.wrongTaps) +
+    row('Never answered', acc.noResponse) +
+  '</dl><p class="sub" style="margin:8px 0 0">' +
+    'Marking a number you did not have costs nothing — prizes are checked ' +
+    'against the numbers actually called, never against your marks. Saying ' +
+    'no to one you did have is the only mistake that can cost you a prize.' +
+  '</p></div>';
 
   h += '<div class="grid two">';
 
@@ -204,9 +220,10 @@ table.log tr:last-child td{border-bottom:0}
   h += '<div class="card"><h2>How everyone marked</h2><ul class="prizes">' +
     d.leaderboard.map(function(p){
       var you = p.name === d.you.name;
-      var pp = p.total ? Math.round(p.correct/p.total*100) : 0;
+      var pd = p.answered || p.total;
+      var pp = pd ? Math.round(p.correct/pd*100) : 0;
       return '<li>' + (you ? '<b style="color:var(--gold)">You</b>' : esc(p.name)) +
-        '<b>' + p.correct + '/' + p.total + ' &middot; ' + pp + '%</b></li>';
+        '<b>' + p.correct + '/' + pd + ' &middot; ' + pp + '%</b></li>';
     }).join('') + '</ul></div>';
 
   h += '<button class="btn noprint" onclick="window.print()">Save as PDF / Print</button>';

@@ -14,7 +14,8 @@
     "db:setup": "node src/db/setup.js",
     "db:reset": "node src/db/reset.js",
     "test": "node --test",
-    "db:check": "node src/db/check-drift.js"
+    "db:check": "node src/db/check-drift.js",
+    "db:migrate": "node src/db/check-drift.js --apply"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

@@ -2,6 +2,12 @@ node_modules/
 .env
 .env.prod
 .env.local
+# Timestamped backups made before editing .env. These hold the live
+# database password, the admin passcode and every API key, and the
+# existing rules did not match them - one has been sitting untracked
+# since September, one commit of `git add -A` away from being public.
+.env.bak.*
+.env.*.bak
 src/temp/
 src/uploads/
 npm-debug.log*

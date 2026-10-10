@@ -5,7 +5,15 @@
  * assumes nothing and returns [] rather than throwing on a shape it does not
  * recognise. Status callbacks (delivered / read) arrive on the same endpoint
  * and are deliberately ignored here.
+ *
+ * So are messages for a different number. One Meta app can own several
+ * WhatsApp numbers, and every one of them posts to the same callback URL - so
+ * a message sent to a sibling product on the same app arrives here looking
+ * perfectly valid. Without the metadata check below, this service would read
+ * it, create a player, and reply from the wrong brand.
  */
+import { config } from '../config/env.js';
+import { log } from '../utils/logger.js';
 
 /**
  * @returns {Array<{
@@ -24,6 +32,24 @@ export function parseInbound(body) {
       const value = change?.value;
       const messages = value?.messages;
       if (!Array.isArray(messages)) continue;
+
+      // Whose number was this sent to?
+      //
+      // Compared as strings: Meta sends the id as a string, and an env file
+      // that quotes it or leaves a trailing space would otherwise silently
+      // discard every real message. Skipped entirely when the id is not
+      // configured - a local setup with no WHATSAPP_PHONE_NUMBER_ID should
+      // still receive its own test messages rather than drop all of them.
+      const targetId = value?.metadata?.phone_number_id;
+      const ownId = config.whatsapp.phoneNumberId;
+      if (ownId && targetId && String(targetId).trim() !== String(ownId).trim()) {
+        log.info('ignoring webhook for another number', {
+          phone_number_id: String(targetId),
+          ours: String(ownId),
+          messages: messages.length,
+        });
+        continue;
+      }
 
       // contacts[] carries the sender's WhatsApp profile name.
       const names = new Map();

@@ -144,8 +144,8 @@ export function historyPage(d) {
       <td>${g.is_host ? '<span class="tag host">host</span>' : 'player'}${g.left_at ? ' <span class="tag left">left</span>' : ''}</td>
       <td class="num">${g.seats}</td>
       <td class="num">${g.numbers_called}</td>
-      <td class="num">${g.decisions ? `${g.correct}/${g.decisions}` : '—'}</td>
-      <td class="num"><b>${g.decisions ? `${g.accuracyPct}%` : '—'}</b></td>
+      <td class="num">${g.decisions ? `${g.correct}/${g.answered}` : '—'}</td>
+      <td class="num"><b>${g.answered ? `${g.accuracyPct}%` : '—'}</b></td>
       <td class="num">${g.missed}</td>
       <td class="num">${g.wrong_taps}</td>
       <td>${g.prizeList.length
@@ -280,7 +280,7 @@ footer{color:var(--dim);font-size:11.5px;text-align:center;margin-top:16px;line-
   <div class="stat"><div class="k">Prizes won</div><div class="v gold">${d.prizes.total}</div>
     <div class="n">${d.prizes.rejected} claim${d.prizes.rejected === 1 ? '' : 's'} refused</div></div>
   <div class="stat"><div class="k">Marking accuracy</div><div class="v">${a.accuracyPct}%</div>
-    <div class="n">${a.correct} of ${a.decisions} numbers</div></div>
+    <div class="n">${a.correct} of ${a.answered} answered</div></div>
 </div>
 
 <h2>Who you are</h2>
@@ -303,7 +303,8 @@ footer{color:var(--dim);font-size:11.5px;text-align:center;margin-top:16px;line-
 <div class="card">
   <ul class="kv">
     <li>Numbers you were offered<b>${a.decisions}</b></li>
-    <li>Marked correctly<b>${a.correct} · ${a.accuracyPct}%</b></li>
+    <li>You answered<b>${a.answered} · ${a.responsePct}%</b></li>
+    <li>Marked correctly<b>${a.correct} · ${a.accuracyPct}% of answered</b></li>
     <li>On your ticket but missed<b>${a.missed}</b></li>
     <li>Tapped but not on your ticket<b>${a.wrong_taps}</b></li>
     <li>Never answered<b>${a.no_response}</b></li>
@@ -312,7 +313,8 @@ footer{color:var(--dim);font-size:11.5px;text-align:center;margin-top:16px;line-
   <div class="dim" style="font-size:12px;margin-top:10px">
     A missed number is the costly one — it cannot win a prize. A wrong tap costs
     nothing, because prizes are checked against the numbers actually called, not
-    against what you marked.
+    against what you marked. Accuracy counts only the numbers you answered, so a
+    game where your connection dropped does not count against you.
   </div>
 </div>
 

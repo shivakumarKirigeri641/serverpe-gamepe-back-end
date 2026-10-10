@@ -5,12 +5,13 @@
  * the button ids matter, and those live in BUTTONS below.
  */
 import { config } from '../config/env.js';
-import { trialEndsAt } from './settings.service.js';
+import { trialEndsAt, bakraEnabled } from './settings.service.js';
 
 /** Button ids are the contract between what we send and what comes back. */
 export const BUTTONS = {
   CONSENT_AGREE: 'consent_agree',
   MENU_PLAY: 'menu_play',
+  MENU_BAKRA: 'menu_bakra',
   MENU_JOIN: 'menu_join',
   MENU_OPTIONS: 'menu_options',
   PLAN_FREE_TRIAL: 'plan_free_trial',
@@ -61,6 +62,17 @@ export const copy = {
 
   menu: () => `What would you like to do?`,
 
+  /**
+   * Said when somebody asks for Tap Bakra while it is switched off.
+   *
+   * No apology and no "coming soon" - a date we have not decided is a promise
+   * we would break. It names what IS available instead, because a dead end is
+   * the one thing a menu must never produce.
+   */
+  bakraUnavailable: () =>
+    `Tap Bakra is taking a break just now.\n\n` +
+    `Tambola is still on - tap *Tambola* to start a game with your friends.`,
+
   askPlayerCount: (min, max) =>
     `How many players will be joining, including you?\n\n` +
     `Reply with a number between *${min}* and *${max}*.\n\n` +
@@ -78,12 +90,21 @@ export const copy = {
     `*Free Trial* - unlimited games, no charge, until ${trialEndsOn()}.\n\n` +
     `Tap below to create your game room.`,
 
-  gameCreated: (code, invite) =>
+  /**
+   * The invite link is deliberately NOT in this message.
+   *
+   * It used to be, and it appeared twice: once here as raw text, and again in
+   * the game room with a Copy button beside it. The raw one was the worse of
+   * the two — a long wa.me URL wrapping across a chat bubble, easy to
+   * half-select when copying, and sitting above the button the host needs to
+   * press anyway. One link, in one place, with one tap to copy it.
+   */
+  gameCreated: (code) =>
     `Your game room is ready! 🎉\n\n` +
     `*Game code: ${code}*\n\n` +
-    `Share this link with your players:\n${invite}\n\n` +
-    `They tap it, accept the terms, and they're in. ` +
-    `Open your host screen below to watch them arrive and start the game.`,
+    `Open your game room below. The link to share with your players is waiting ` +
+    `inside, with a button to copy it — paste that into your WhatsApp group and ` +
+    `they're in.`,
 
   askJoinCode: () =>
     `What's the game code?\n\n` +
@@ -290,12 +311,35 @@ Type *hi* to start.`,
     `No one else can join after that.`,
 };
 
-/** The three-button main menu. */
-export const menuButtons = () => [
-  { id: BUTTONS.MENU_PLAY, title: 'Play Tambola' },
-  { id: BUTTONS.MENU_JOIN, title: 'Join game' },
-  { id: BUTTONS.MENU_OPTIONS, title: 'Options' },
-];
+/**
+ * The main menu: both games, then everything else.
+ *
+ * WhatsApp allows three reply buttons, and a menu step in front of them would
+ * cost every returning player a tap forever to solve a problem that only
+ * exists once. So the two games are always visible and never behind anything -
+ * and there is no hamburger, because WhatsApp has no such thing: a list
+ * message renders a button carrying words we choose.
+ *
+ * "Join game" moved into More. Players normally arrive through the host's
+ * shared link rather than by typing a code, so it does not deserve one of the
+ * three slots that a game does.
+ *
+ * With Tap Bakra switched off its slot is given to Join rather than left
+ * empty. A two-button menu would read as something missing; this reads as a
+ * menu that was always two games short of three.
+ */
+export const menuButtons = () =>
+  bakraEnabled()
+    ? [
+        { id: BUTTONS.MENU_PLAY, title: 'Tambola' },
+        { id: BUTTONS.MENU_BAKRA, title: 'Tap Bakra' },
+        { id: BUTTONS.MENU_OPTIONS, title: 'More' },
+      ]
+    : [
+        { id: BUTTONS.MENU_PLAY, title: 'Tambola' },
+        { id: BUTTONS.MENU_JOIN, title: 'Join game' },
+        { id: BUTTONS.MENU_OPTIONS, title: 'More' },
+      ];
 
 export const consentButtons = () => [
   { id: BUTTONS.CONSENT_AGREE, title: 'Agree & continue' },
@@ -313,6 +357,7 @@ export const planButtons = () => [
  * "what does this actually do" explanation belongs.
  */
 export const OPTIONS = {
+  JOIN: 'opt_join',
   REPORT: 'opt_report',
   HISTORY: 'opt_history',
   DEMO: 'opt_demo',
@@ -322,23 +367,134 @@ export const OPTIONS = {
 };
 
 export const optionsList = () => ({
-  buttonText: 'View options',
+  // The button carries words, not an icon. WhatsApp has no hamburger and this
+  // is the only label a player sees before opening the list.
+  buttonText: 'See all options',
   header: config.brandName,
   footer: 'Tap an option to continue',
-  sections: [{
-    title: 'Options',
-    rows: [
-      { id: OPTIONS.REPORT, title: 'Recently played', description: 'Your last game report, ready to download' },
-      { id: OPTIONS.HISTORY, title: 'Get my play history', description: 'Every game you have played, ready to download' },
-      { id: OPTIONS.DEMO, title: 'How to play', description: 'A short video, and a walkthrough on a real ticket' },
-      { id: OPTIONS.SPONSOR, title: 'Sponsor a parent', description: `Support a parent on ${config.sponsorship.partner}` },
-      { id: OPTIONS.FEEDBACK, title: 'Give feedback', description: 'Rate a game and tell us what you think' },
-      { id: OPTIONS.SUPPORT, title: 'Support', description: 'Raise a question and get a reference' },
-    ],
-  }],
+
+  /*
+   * Grouped by what somebody is trying to do, not by which game.
+   *
+   * Only one row below belongs to a single game - joining needs a room code,
+   * and only Tambola has rooms. Everything else already spans both, so a
+   * section per game would be one row, then nothing, then a bigger leftover
+   * pile than before.
+   *
+   * WhatsApp allows ten rows across all sections; seven leaves room for a
+   * third game without a redesign.
+   */
+  sections: [
+    {
+      title: 'Your play',
+      rows: [
+        { id: OPTIONS.REPORT, title: 'Recently played', description: 'Your last report, from either game' },
+        { id: OPTIONS.HISTORY, title: 'My play history', description: 'Everything you have played, both games' },
+      ],
+    },
+    {
+      title: 'Tambola',
+      rows: [
+        { id: OPTIONS.JOIN, title: 'Join a game', description: 'Have a room code from a friend? Enter it here' },
+      ],
+    },
+    {
+      title: 'Help & more',
+      rows: [
+        { id: OPTIONS.DEMO, title: 'How to play', description: 'Both games, explained in a minute' },
+        { id: OPTIONS.SPONSOR, title: 'Sponsor a parent', description: `Support a parent on ${config.sponsorship.partner}` },
+        { id: OPTIONS.FEEDBACK, title: 'Give feedback', description: 'Rate a game and tell us what you think' },
+        { id: OPTIONS.SUPPORT, title: 'Support', description: 'Raise a question and get a reference' },
+      ],
+    },
+  ],
 });
 
 /** Appended to `copy` after definition to keep the main object readable. */
 copy.replyAdded = (reference) =>
   `Added to your support request *${reference}*. 📝\n\n` +
   `We will get back to you here. Send *status ${reference}* any time to check on it.`;
+
+/**
+ * Tap Bakra's invitation.
+ *
+ * Deliberately short. The game explains itself in one screen, and a paragraph
+ * of rules in WhatsApp is a paragraph nobody reads before tapping the link.
+ */
+export const bakra = {
+  intro: () =>
+    `*Tap Bakra* — tap fast, don't be the bakra.\n\n` +
+    `10 questions. 5 seconds each. Sometimes the right answer is to tap nothing at all.\n\n` +
+    `Your link is below. It is yours alone.`,
+
+  linkText: () => 'Play Tap Bakra',
+};
+
+
+/**
+ * Answers that have to cover two games at once.
+ *
+ * Written as one message with both links rather than a "which game?" question,
+ * because a menu that answers a menu is how a bot starts feeling like paperwork.
+ */
+export const bothGames = {
+  /**
+   * Both games, side by side.
+   *
+   * The counts come first because they are the answer: somebody asking for
+   * their history wants to know how much there is before they open anything.
+   */
+  historyBoth: ({ games, rounds, tambolaUrl, bakraUrl }) => {
+    const lines = ['*Your play history*', ''];
+
+    lines.push(games
+      ? `🎟️ *Tambola* — ${games} game${games === 1 ? '' : 's'}`
+      : '🎟️ *Tambola* — nothing yet');
+    if (games && tambolaUrl) lines.push(tambolaUrl);
+
+    lines.push('');
+    lines.push(rounds
+      ? `🐐 *Tap Bakra* — ${rounds} round${rounds === 1 ? '' : 's'}`
+      : '🐐 *Tap Bakra* — nothing yet');
+    if (rounds && bakraUrl) lines.push(bakraUrl);
+
+    lines.push('', 'Each page opens in your browser. Tap *Save as PDF* to keep a copy.');
+    return lines.join('\n');
+  },
+
+  /** The other game, offered once, after the answer they asked for. */
+  alsoPlayed: (game, when, url) =>
+    `\n\nYour last *${game}` + `* was ${when}:\n${url}`,
+
+  history: (tambolaGames, bakraRounds) => {
+    const lines = ['*Your play history*', ''];
+    lines.push(tambolaGames
+      ? `• Tambola — ${tambolaGames} game${tambolaGames === 1 ? '' : 's'}`
+      : '• Tambola — nothing yet');
+    lines.push(bakraRounds
+      ? `• Tap Bakra — ${bakraRounds} round${bakraRounds === 1 ? '' : 's'}`
+      : '• Tap Bakra — nothing yet');
+    lines.push('', 'The links below open each one.');
+    return lines.join('\n');
+  },
+
+  nothingPlayed: () =>
+    'You have not finished a game yet.\n\n' +
+    'Start a Tambola game with your group, or play a minute of Tap Bakra on your own — ' +
+    'both are on the menu.',
+
+  howToPlay: () =>
+    '*How to play*\n\n' +
+    '*Tambola* — the host starts a room and shares one link. ' +
+    'Numbers are called automatically and you tap the ones on your ticket. ' +
+    'Six prizes, up to 200 players.\n\n' +
+    '*Tap Bakra* — ten instructions, five seconds each. ' +
+    'Tap the right one before the clock runs out. ' +
+    'Sometimes the instruction says *not* to tap, and that is where most people slip.\n\n' +
+    'The video below walks through a real Tambola ticket.',
+
+  recentBakra: (score, correct, of, when) =>
+    `*Tap Bakra* — your last round\n\n` +
+    `• Score: ${score}\n• Correct: ${correct} of ${of}\n• Played: ${when}\n\n` +
+    'The full report is below.',
+};

@@ -3,24 +3,33 @@
  *
  * Routes get mounted here as each phase lands. Right now: health only.
  */
-import express, { Router } from 'express';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import { config } from '../config/env.js';
-import { log } from '../utils/logger.js';
-import { pool } from '../db/pool.js';
-import { webhookRoutes } from './webhook.routes.js';
-import { policiesPage } from './policies-page.js';
-import { boardRoutes } from './board.routes.js';
-import { adminRoutes } from './admin.routes.js';
-import { publicRoutes } from './public.routes.js';
-import { formsRoutes } from './forms.routes.js';
+import express, { Router } from "express";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { config } from "../config/env.js";
+import { log } from "../utils/logger.js";
+import { pool } from "../db/pool.js";
+import { webhookRoutes } from "./webhook.routes.js";
+import { policiesPage } from "./policies-page.js";
+import { boardRoutes } from "./board.routes.js";
+import { fatafatRoutes } from "./fatafat.routes.js";
+import { adminRoutes } from "./admin.routes.js";
+import { publicRoutes } from "./public.routes.js";
+import { formsRoutes } from "./forms.routes.js";
 
 /** src/media, resolved from this file so the cwd cannot change the answer. */
-const mediaDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'media');
+const mediaDir = join(dirname(fileURLToPath(import.meta.url)), "..", "media");
+
+/** src/images - the brand set: favicons, icons, wordmarks, social cards. */
+const imagesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "images");
 
 export function createApp() {
   const app = express();
+
+  // Browsers probe /favicon.ico on the origin root. The app assets live under
+  // /public/images on the API mount, so answer cleanly here instead of logging
+  // a misleading 404 on every refresh.
+  app.get("/favicon.ico", (_req, res) => res.sendStatus(204));
 
   // Meta signs the RAW request body, so it has to be captured before JSON
   // parsing rewrites it. Doing this at parse time - rather than re-serialising
@@ -29,7 +38,7 @@ export function createApp() {
   // WhatsApp webhooks, so it is wired in from day one.
   app.use(
     express.json({
-      limit: '1mb',
+      limit: "1mb",
       verify: (req, _res, buf) => {
         req.rawBody = buf;
       },
@@ -37,36 +46,36 @@ export function createApp() {
   );
 
   app.use(express.urlencoded({ extended: false }));
-  app.disable('x-powered-by');
+  app.disable("x-powered-by");
 
   // Behind ngrok (and later behind whatever fronts api.mastipe.in), the socket
   // address is the proxy's, not the player's. Without this every session would
   // be recorded from 127.0.0.1 and the tracking would be worthless.
-  app.set('trust proxy', true);
+  app.set("trust proxy", true);
 
   // Everything hangs off API_BASE_PATH so this service can share a hostname
   // with other products behind a gateway. With the variable unset the prefix
   // is empty and routes mount at the root exactly as before.
   const api = Router();
 
-  api.get('/healthz', async (_req, res) => {
-    let db = 'down';
+  api.get("/healthz", async (_req, res) => {
+    let db = "down";
     try {
-      await pool.query('SELECT 1');
-      db = 'up';
+      await pool.query("SELECT 1");
+      db = "up";
     } catch {
-      db = 'down';
+      db = "down";
     }
-    res.status(db === 'up' ? 200 : 503).json({
-      ok: db === 'up',
+    res.status(db === "up" ? 200 : 503).json({
+      ok: db === "up",
       service: config.brandName,
       db,
       uptimeSeconds: Math.round(process.uptime()),
     });
   });
 
-  api.get('/policies', (_req, res) => {
-    res.type('html').send(policiesPage());
+  api.get("/policies", (_req, res) => {
+    res.type("html").send(policiesPage());
   });
 
   // The panel is served from a different origin in production (it is a static
@@ -74,14 +83,20 @@ export function createApp() {
   // /serverpe, making requests same-origin and this a no-op.
   if (config.admin.corsOrigins.length) {
     api.use(config.admin.basePath, (req, res, next) => {
-      const origin = req.get('origin');
+      const origin = req.get("origin");
       if (origin && config.admin.corsOrigins.includes(origin)) {
-        res.set('Access-Control-Allow-Origin', origin);
-        res.set('Vary', 'Origin');
-        res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept');
-        res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+        res.set("Access-Control-Allow-Origin", origin);
+        res.set("Vary", "Origin");
+        res.set(
+          "Access-Control-Allow-Headers",
+          "Authorization, Content-Type, Accept",
+        );
+        res.set(
+          "Access-Control-Allow-Methods",
+          "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+        );
       }
-      if (req.method === 'OPTIONS') return res.sendStatus(204);
+      if (req.method === "OPTIONS") return res.sendStatus(204);
       next();
     });
   }
@@ -102,11 +117,11 @@ export function createApp() {
    * for a day on somebody's phone.
    */
   api.use(
-    '/public/media',
+    "/public/media",
     express.static(mediaDir, {
-      maxAge: '1h',
+      maxAge: "1h",
       index: false,
-      dotfiles: 'deny',
+      dotfiles: "deny",
       // Falls through to the app's own 404 rather than handing express.static
       // the last word. With fallthrough:false a missing file is pushed into
       // the error handler and comes back as a 500, which would say the server
@@ -115,10 +130,28 @@ export function createApp() {
     }),
   );
 
+  /**
+   * The brand images.
+   *
+   * Cached hard: a favicon is requested on every page load and these files
+   * change roughly never. A year is safe because replacing a logo means
+   * replacing the file, and ETag still forces a revalidation when it does.
+   */
+  api.use(
+    "/public/images",
+    express.static(imagesDir, {
+      maxAge: "365d",
+      index: false,
+      dotfiles: "deny",
+      fallthrough: true,
+    }),
+  );
+
   api.use(publicRoutes());
   api.use(formsRoutes());
 
   api.use(boardRoutes());
+  api.use(fatafatRoutes());
   api.use(webhookRoutes());
 
   app.use(config.apiBasePath, api);
@@ -126,22 +159,25 @@ export function createApp() {
   // Uptime checks and load balancers expect a root health endpoint, so keep
   // one there too when a prefix is configured.
   if (config.apiBasePath) {
-    app.get('/healthz', (req, res, next) => {
-      req.url = '/healthz';
+    app.get("/healthz", (req, res, next) => {
+      req.url = "/healthz";
       api(req, res, next);
     });
   }
 
   app.use((req, res) => {
-    log.warn('404', { method: req.method, path: req.originalUrl });
-    res.status(404).json({ error: 'not found' });
+    log.warn("404", { method: req.method, path: req.originalUrl });
+    res.status(404).json({ error: "not found" });
   });
 
   // Anything that escapes a route handler lands here rather than killing the
   // process mid-game.
   app.use((err, _req, res, _next) => {
-    log.error('unhandled request error', { message: err.message, stack: err.stack });
-    res.status(500).json({ error: 'internal error' });
+    log.error("unhandled request error", {
+      message: err.message,
+      stack: err.stack,
+    });
+    res.status(500).json({ error: "internal error" });
   });
 
   return app;

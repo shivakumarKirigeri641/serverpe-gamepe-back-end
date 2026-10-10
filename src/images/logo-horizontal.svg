@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" width="1000" height="300">
+    
+    <g transform="translate(40 40) scale(0.43)">
+      <rect width="512" height="512" rx="112" fill="#7d0f22"/>
+  <g fill="none" stroke="#f0a202" stroke-width="56"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M120 400 V150 L215 292 L310 150 V400"/>
+    <path d="M310 152 H350 a54 54 0 0 1 0 108 H310"/>
+  </g>
+    </g>
+    <text x="290" y="172" font-family="Georgia, 'Times New Roman', serif"
+          font-size="96" font-weight="bold" fill="#7d0f22" letter-spacing="-1">MastiPe</text>
+    <text x="292" y="218" font-family="Helvetica, Arial, sans-serif"
+          font-size="26" fill="#7d0f22" opacity="0.65">Play together, have Masti.</text>
+  </svg>
