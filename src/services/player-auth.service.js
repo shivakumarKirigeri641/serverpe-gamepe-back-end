@@ -19,7 +19,7 @@
  * on the way in, so a copy of the database is not a way to sign in as anyone.
  */
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
-import { query } from "../db/pool.js";
+import { query, withTransaction } from "../db/pool.js";
 import { config } from "../config/env.js";
 import { log } from "../utils/logger.js";
 import { sendOtp, SmsError } from "./sms.service.js";
@@ -210,7 +210,18 @@ export async function requestOtp({ phone: raw, ip }) {
  * has not yet agreed to the current policy version, which for a web sign-in is
  * every first visit and every visit after the terms change.
  */
-export async function verifyOtp({ phone: raw, code, displayName, consent, ip, userAgent }) {
+export async function verifyOtp({
+  phone: raw,
+  code,
+  displayName,
+  consent,
+  ip,
+  userAgent,
+  // The guest they were playing as, if any. Passed by the route from the
+  // session token the page already holds - never from the request body,
+  // which would let anyone claim somebody else's guest history.
+  guestPlayerId = null,
+}) {
   const phone = normalisePhone(raw);
   if (!phone) throw new AuthError("Enter a valid 10-digit Indian mobile number.", { code: "bad_phone" });
 
@@ -271,8 +282,24 @@ export async function verifyOtp({ phone: raw, code, displayName, consent, ip, us
     throw new AuthError("Sign-in is not available for this number.", { status: 403, code: "blocked" });
   }
 
+  /*
+   * A guest already told us their name when they joined, so asking again on
+   * the way to a number is asking twice for the same thing - and it refused
+   * the sign-in outright when the page (correctly) did not resend it.
+   */
+  let guestName = null;
+  if (guestPlayerId) {
+    const { rows: [g] } = await query(
+      "SELECT display_name FROM players WHERE id = $1 AND wa_id LIKE 'guest:%'",
+      [guestPlayerId],
+    );
+    guestName = g?.display_name ?? null;
+  }
+
   let missing = null;
-  if (!player && !name) missing = ["name_required", "Tell us your name - it is what the other players will see."];
+  if (!player && !name && !guestName) {
+    missing = ["name_required", "Tell us your name - it is what the other players will see."];
+  }
   else if (consent !== true && (!player || !(await hasConsented(player.id, POLICY_VERSION)))) {
     missing = ["consent_required", "Please accept the terms to continue."];
   }
@@ -291,6 +318,26 @@ export async function verifyOtp({ phone: raw, code, displayName, consent, ip, us
 
   /* the player */
   let isNew = false;
+
+  /*
+   * Were they playing as a guest a moment ago?
+   *
+   * If so, that guest row becomes this number's player - so the games they
+   * just played follow them in. Without this, signing in would LOSE their
+   * history, which makes giving us a number a punishment rather than an
+   * upgrade, and nobody would do it twice.
+   */
+  if (!player && guestPlayerId) {
+    const promoted = await promoteGuest({ guestPlayerId, phone, name });
+    if (promoted) {
+      player = promoted.player;
+      isNew = !promoted.merged;
+    }
+  } else if (player && guestPlayerId && Number(guestPlayerId) !== Number(player.id)) {
+    // They have an account AND a guest session. Fold the guest into it.
+    const promoted = await promoteGuest({ guestPlayerId, phone, name });
+    if (promoted) player = promoted.player;
+  }
 
   if (!player) {
     ({ rows: [player] } = await query(
@@ -329,6 +376,148 @@ export async function verifyOtp({ phone: raw, code, displayName, consent, ip, us
   return { token, player: publicPlayer(player), isNew };
 }
 
+/* ── guests ────────────────────────────────────────────────────────────── */
+
+/**
+ * The prefix that marks a player who has not given a number.
+ *
+ * `wa_id` is NOT NULL and UNIQUE, and it is the identity column everything
+ * else joins on, so a guest needs a value there. A namespaced synthetic one
+ * keeps guests inside the single players table - which is what lets a guest
+ * who signs in later become the same player rather than a second account.
+ */
+const GUEST_PREFIX = "guest:";
+
+export const isGuest = (player) =>
+  String(player?.wa_id ?? "").startsWith(GUEST_PREFIX);
+
+/**
+ * A player with a name and nothing else.
+ *
+ * ── Why guests exist ─────────────────────────────────────────────────────
+ *
+ * Every player arrives through a link a host shared, and they arrive at the
+ * worst possible moment to be asked for a phone number: the host has just
+ * shared the link, people are gathering, the game is about to start. Six
+ * people each leaving for their SMS app is how a room ends up half empty on
+ * the one occasion that decides whether a group ever plays again.
+ *
+ * So a joiner gives a name. The HOST still signs in properly - they are the
+ * organiser, the repeat visitor, the number actually worth having, and
+ * requiring it of them also means a stranger cannot spam rooms into
+ * existence.
+ *
+ * ── One identity per device, not per request ─────────────────────────────
+ *
+ * The token goes in localStorage and is reused. An earlier version of this
+ * idea minted an identity per REQUEST and three taps on one invite produced
+ * three players holding three tickets. The caller passes back the session it
+ * already has, and an existing guest session is returned untouched rather
+ * than replaced.
+ */
+export async function createGuest({ displayName, consent, ip, userAgent } = {}) {
+  const name = String(displayName ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
+  if (name.length < 2) {
+    throw new AuthError("Tell us your name - it is what the other players will see.", {
+      code: "name_required",
+    });
+  }
+  // Consent is a legal requirement, not an account feature. A guest ticks the
+  // same box a member does.
+  if (consent !== true) {
+    throw new AuthError("Please accept the terms to continue.", { code: "consent_required" });
+  }
+
+  const waId = GUEST_PREFIX + randomBytes(12).toString("base64url");
+  const { rows: [player] } = await query(
+    `INSERT INTO players (wa_id, display_name, channel)
+     VALUES ($1, $2, 'web')
+     RETURNING *`,
+    [waId, name],
+  );
+
+  await recordConsent(player.id, POLICY_VERSION, "web");
+
+  const token = randomBytes(32).toString("base64url");
+  await query(
+    `INSERT INTO player_sessions (token_hash, player_id, request_ip, user_agent, expires_at)
+     VALUES ($1, $2, $3, $4, now() + make_interval(days => $5))`,
+    [hashToken(token), player.id, ip ?? null, String(userAgent ?? "").slice(0, 300) || null, config.otp.sessionDays],
+  );
+
+  log.info("guest created", { playerId: player.id, name });
+  return { token, player: publicPlayer(player), isNew: true, guest: true };
+}
+
+/**
+ * A guest who has now given a number becomes that number's player.
+ *
+ * Two cases, and getting the second one wrong is how somebody loses their
+ * history for the crime of signing in:
+ *
+ *   the number is new    rename the guest row. Nothing to move, and every
+ *                        game, ticket and claim already points at this id.
+ *
+ *   the number exists    the person already has an account (they hosted once,
+ *                        or played before). Re-point the guest's rows at it
+ *                        and retire the guest.
+ *
+ * Done in one transaction: a half-merged player would hold a ticket in a game
+ * under one id and a claim under another.
+ */
+export async function promoteGuest({ guestPlayerId, phone, name }) {
+  return withTransaction(async (client) => {
+    const { rows: [guest] } = await client.query(
+      "SELECT * FROM players WHERE id = $1 FOR UPDATE",
+      [guestPlayerId],
+    );
+    if (!guest || !String(guest.wa_id).startsWith(GUEST_PREFIX)) return null;
+
+    const { rows: [existing] } = await client.query(
+      "SELECT * FROM players WHERE wa_id = $1 FOR UPDATE",
+      [phone],
+    );
+
+    if (!existing) {
+      const { rows: [promoted] } = await client.query(
+        `UPDATE players
+            SET wa_id = $2,
+                display_name = coalesce(display_name, $3),
+                last_seen_at = now()
+          WHERE id = $1
+        RETURNING *`,
+        [guest.id, phone, name ?? null],
+      );
+      log.info("guest promoted in place", { playerId: guest.id });
+      return { player: promoted, merged: false };
+    }
+
+    // Move what the guest did onto the real player. ON CONFLICT DO NOTHING on
+    // game_players: if they somehow hold both seats in one game, keep the one
+    // that is already there rather than failing the whole merge.
+    for (const sql of [
+      `UPDATE game_players SET player_id = $2 WHERE player_id = $1
+         AND NOT EXISTS (SELECT 1 FROM game_players g2
+                          WHERE g2.game_id = game_players.game_id AND g2.player_id = $2)`,
+      `UPDATE entries        SET player_id = $2 WHERE player_id = $1`,
+      `UPDATE draw_answers   SET player_id = $2 WHERE player_id = $1`,
+      `UPDATE claims         SET player_id = $2 WHERE player_id = $1`,
+      `UPDATE board_sessions SET player_id = $2 WHERE player_id = $1`,
+      `UPDATE analytics_events SET player_id = $2 WHERE player_id = $1`,
+    ]) {
+      await client.query(sql, [guest.id, existing.id]);
+    }
+
+    // Any seat that could not be moved belonged to a game the real player was
+    // already in, so the guest row has nothing left worth keeping.
+    await client.query("DELETE FROM players WHERE id = $1", [guest.id]);
+    await client.query("UPDATE players SET last_seen_at = now() WHERE id = $1", [existing.id]);
+
+    log.info("guest merged into existing player", { guestId: guest.id, playerId: existing.id });
+    return { player: existing, merged: true };
+  });
+}
+
 /* ── sessions ──────────────────────────────────────────────────────────── */
 
 /** What the page is allowed to know about the signed-in player. */
@@ -336,8 +525,11 @@ export function publicPlayer(p) {
   return {
     id: Number(p.id),
     name: p.display_name || null,
-    phone: masked(p.wa_id),
+    // A guest has no number, and `masked` on a synthetic id would produce
+    // something that looks like one. Null says "not given" honestly.
+    phone: isGuest(p) ? null : masked(p.wa_id),
     channel: p.channel || "whatsapp",
+    guest: isGuest(p),
   };
 }
 
@@ -388,5 +580,58 @@ export function requirePlayer() {
     } catch (err) {
       next(err);
     }
+  };
+}
+
+/**
+ * A player row, but only a VERIFIED one. Guests are turned away.
+ *
+ * Used for hosting. A host is the organiser and the repeat visitor, so their
+ * number is the one actually worth having - and requiring it is also what
+ * stops a stranger spawning rooms by the hundred, since a guest identity
+ * costs nothing to mint.
+ */
+export function requireVerifiedPlayer() {
+  return async (req, res, next) => {
+    try {
+      const player = await resolvePlayerSession(bearer(req));
+      if (!player) {
+        return res.status(401).json({ error: "Please sign in again.", code: "signed_out" });
+      }
+      if (isGuest(player)) {
+        return res.status(403).json({
+          error: "Add your mobile number to host a game. Your name and games stay as they are.",
+          code: "verification_required",
+        });
+      }
+      req.player = player;
+      req.playerToken = bearer(req);
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
+}
+
+/**
+ * Resolves a session if there is one, and never refuses.
+ *
+ * For routes that are open to anybody but behave differently when the caller
+ * already has an identity - sign-in being the one that matters, where an
+ * existing guest session is what lets their games follow them in.
+ */
+export function attachPlayer() {
+  return async (req, _res, next) => {
+    try {
+      const player = await resolvePlayerSession(bearer(req));
+      if (player) {
+        req.player = player;
+        req.playerToken = bearer(req);
+        if (isGuest(player)) req.guestPlayerId = player.id;
+      }
+    } catch {
+      /* an unreadable token is simply no identity */
+    }
+    next();
   };
 }

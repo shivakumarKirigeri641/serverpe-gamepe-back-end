@@ -57,6 +57,7 @@ const SERVER_STEPS = new Map([
   ["signed_in", { event: "web.signed_in", trigger: "web.signed_in", words: "signed in" }],
   ["hosted", { event: "web.hosted", trigger: "web.hosted", words: "created a room" }],
   ["joined", { event: "web.joined", trigger: "web.joined", words: "joined a room" }],
+  ["guest_joined", { event: "web.guest_joined", trigger: "web.guest_joined", words: "started playing as a guest" }],
 ]);
 
 const STEPS = new Map([...CLIENT_STEPS, ...SERVER_STEPS]);

@@ -102,6 +102,37 @@ small{color:var(--muted)}
     </section>
 
     <!-- ── step 1: the number ───────────────────────────────────────── -->
+    <!--
+      ── joining an invite: a name, and in ──────────────────────────────
+
+      Shown instead of the number form when somebody arrives with a room
+      code, which is how every invited player arrives. They are standing in a
+      room with a game about to start; sending them off to an SMS app is how
+      a host ends up waiting with half a table.
+
+      The host still signs in properly. They are the organiser, the repeat
+      visitor, and the number actually worth having.
+    -->
+    <section class="card hidden" id="stepGuest">
+      <h2>Join the game</h2>
+      <p>Room <b id="guestCode"></b>. Just your name - no number needed.</p>
+      <div class="row">
+        <div>
+          <label>Your name - shown to the other players</label>
+          <input id="guestName" maxlength="40" autocomplete="given-name" placeholder="Priya" />
+        </div>
+        <label class="check" id="guestConsentRow">
+          <input type="checkbox" id="guestConsent" />
+          <span>I agree to the <a href="${esc(policies)}/terms" target="_blank" rel="noopener">Terms</a>
+            and <a href="${esc(policies)}/privacy" target="_blank" rel="noopener">Privacy Policy</a>.
+            Entertainment only - no betting, no money.</span>
+        </label>
+        <button id="guestBtn">Join game</button>
+        <button class="link" id="guestSignInBtn">I have a number - sign in instead</button>
+        <div id="guestMsg" class="msg"></div>
+      </div>
+    </section>
+
     <section class="card hidden" id="stepPhone">
       <h2>Your mobile number</h2>
       <p>We will send a ${otpLength}-digit code by SMS.</p>
@@ -279,7 +310,7 @@ window.__PLAY__ = ${blob({ mode, prefillCode, signInAvailable, otpLength })};
   }
 
   function screen(id){
-    ['unavailable', 'stepPhone', 'stepCode', 'home'].forEach(function(s){
+    ['unavailable', 'stepGuest', 'stepPhone', 'stepCode', 'home'].forEach(function(s){
       $(s).classList.toggle('hidden', s !== id);
     });
   }
@@ -460,6 +491,36 @@ ${
 
   /* ── wiring ─────────────────────────────────────────────────────────── */
 
+  function joinAsGuest(){
+    var btn = $('guestBtn');
+    var name = $('guestName').value.trim();
+    if (name.length < 2) { show($('guestMsg'), 'Please tell us your name.'); return; }
+    if ($('guestConsent').checked !== true) {
+      $('guestConsentRow').classList.add('flag');
+      show($('guestMsg'), 'Please accept the terms to continue.');
+      return;
+    }
+    $('guestConsentRow').classList.remove('flag');
+    busy(btn, true, 'Joining...');
+    show($('guestMsg'), '');
+    call('POST', '/public/play/guest', { displayName: name, consent: true })
+      .then(function(out){
+        memToken = out.token;
+        setToken(out.token);
+        reached = 'done';
+        // Straight into the room they were invited to. They came from a link
+        // with a code in it; making them now find and press Join would be a
+        // step for nothing.
+        return call('POST', '/public/play/join', { code: CFG.prefillCode });
+      })
+      .then(function(out){ show($('guestMsg'), 'Opening your game room...', true); goTo(out.boardUrl); })
+      .catch(function(err){ show($('guestMsg'), err.message); })
+      .then(function(){ busy(btn, false, 'Join game'); });
+  }
+
+  $('guestBtn').onclick = joinAsGuest;
+  $('guestName').onkeydown = function(e){ if (e.key === 'Enter') joinAsGuest(); };
+  $('guestSignInBtn').onclick = function(){ screen('stepPhone'); $('phone').focus(); };
   $('sendBtn').onclick = sendCode;
   $('phone').onkeydown = function(e){ if (e.key === 'Enter') sendCode(); };
   $('verifyBtn').onclick = verify;
@@ -496,15 +557,34 @@ ${bakraAvailable ? "  $('bakraBtn').onclick = bakra;" : ''}
     if (reached !== 'landed' && reached !== 'done') beacon('abandoned', { at: reached });
   });
 
-  if (!CFG.signInAvailable) { screen('unavailable'); return; }
+  /*
+   * Where a new arrival starts.
+   *
+   * With a room code in the URL they were invited: name and in. Without one
+   * they came to host or to find their own games, which needs a number.
+   *
+   * Note sign-in being unavailable no longer blocks an invited player -
+   * guests need no SMS at all, so a provider outage stops new hosts but a
+   * game already being set up can still fill. That is deliberate: it would be
+   * perverse for the room to empty because of something only the host needs.
+   */
+  var invited = !!CFG.prefillCode;
 
   if (memToken) {
     call('GET', '/public/play/me').then(function(me){
       enterHome(me.player, me.activeGame, false);
     }).catch(function(){
-      // An expired or revoked session is ordinary; start again at the number.
-      memToken = null; clearToken(); screen('stepPhone');
+      // An expired or revoked session is ordinary; start again.
+      memToken = null; clearToken();
+      if (invited) { $('guestCode').textContent = CFG.prefillCode; screen('stepGuest'); }
+      else if (!CFG.signInAvailable) screen('unavailable');
+      else screen('stepPhone');
     });
+  } else if (invited) {
+    $('guestCode').textContent = CFG.prefillCode;
+    screen('stepGuest');
+  } else if (!CFG.signInAvailable) {
+    screen('unavailable');
   } else {
     screen('stepPhone');
   }

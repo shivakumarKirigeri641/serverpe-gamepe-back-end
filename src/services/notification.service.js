@@ -88,6 +88,14 @@ export const TRIGGERS = [
     mode: 'instant',
   },
   {
+    key: 'web.guest_joined',
+    label: 'Someone started playing as a guest',
+    description: 'An invited player gave a name and went straight in, with no mobile number. This is the normal path for anyone who taps a link a host shared.',
+    icon: '👤',
+    subject: 'someone started playing as a guest',
+    mode: 'instant',
+  },
+  {
     key: 'web.joined',
     label: 'Someone joined a room',
     description: 'A player took a seat — usually from a link a host shared.',

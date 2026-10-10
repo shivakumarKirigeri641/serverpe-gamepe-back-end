@@ -40,6 +40,10 @@ import {
   revokePlayerSession,
   publicPlayer,
   AuthError,
+  createGuest,
+  isGuest,
+  requireVerifiedPlayer,
+  attachPlayer,
 } from "../services/player-auth.service.js";
 import { smsReady } from "../services/sms.service.js";
 import { recordStep, isClientStep } from "../services/journey.service.js";
@@ -368,6 +372,49 @@ export function publicRoutes() {
     }),
   );
 
+  /**
+   * Play as a guest: a name, the terms, and in.
+   *
+   * This is the path every INVITED player takes. They arrive from a link the
+   * host shared, at the moment a game is about to start, which is the worst
+   * possible moment to send somebody off to their SMS app. The host signs in
+   * properly - they are the organiser and the number worth having, and
+   * requiring it of them is also what stops strangers spawning rooms.
+   *
+   * Rate limited harder than sign-in: each call creates a player row, and
+   * unlike an OTP request there is no code to get wrong, so nothing else
+   * bounds it.
+   */
+  const guestLimiter = rateLimit({ max: 20, windowMs: 60_000, name: "guest" });
+
+  router.post(
+    "/public/play/guest",
+    webOnly,
+    guestLimiter,
+    wrap(async (req, res) => {
+      try {
+        const out = await createGuest({
+          displayName: req.body?.displayName,
+          // Only a literal true. A page that sends consent without a ticked
+          // box is not consent, whatever it claims.
+          consent: req.body?.consent === true,
+          ip: req.ip,
+          userAgent: req.get("user-agent"),
+        });
+        await recordStep({
+          step: "guest_joined",
+          req,
+          playerId: out.player.id,
+          extra: { name: out.player.name },
+        });
+        ok(res, out, 0);
+      } catch (err) {
+        if (err instanceof AuthError) return authFail(res, err);
+        throw err;
+      }
+    }),
+  );
+
   router.post(
     "/public/play/otp/request",
     webOnly,
@@ -395,6 +442,9 @@ export function publicRoutes() {
     "/public/play/otp/verify",
     webOnly,
     otpLimiter,
+    // Soft: anybody may sign in, but if they are already playing as a guest
+    // we need to know, so their games come with them.
+    attachPlayer(),
     wrap(async (req, res) => {
       try {
         const out = await verifyOtp({
@@ -407,6 +457,10 @@ export function publicRoutes() {
           consent: req.body?.consent === true,
           ip: req.ip,
           userAgent: req.get("user-agent"),
+          // Resolved from the Bearer token the page already holds, never from
+          // the body - otherwise anyone could claim another guest's history
+          // by posting their id. Set by attachPlayer() above.
+          guestPlayerId: req.guestPlayerId ?? null,
         });
         await recordEvent({
           type: out.isNew ? "player.registered" : "player.signed_in",
@@ -472,7 +526,8 @@ export function publicRoutes() {
   router.post(
     "/public/play/host",
     webOnly,
-    signedIn,
+    // Hosting needs a real number; joining does not. See requireVerifiedPlayer.
+    requireVerifiedPlayer(),
     wrap(async (req, res) => {
       const expectedPlayers = Number(req.body?.expectedPlayers);
       const player = req.player;
