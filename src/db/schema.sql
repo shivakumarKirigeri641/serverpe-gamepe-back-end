@@ -645,3 +645,76 @@ CREATE TABLE player_sessions (
 );
 CREATE INDEX player_sessions_player_idx ON player_sessions (player_id);
 CREATE INDEX player_sessions_expiry_idx ON player_sessions (expires_at);
+
+-- ===========================================================================
+-- Hand Cricket
+-- ===========================================================================
+--
+-- Two sides: side 1 is whoever started the match, side 2 is the bot or the
+-- friend who joined by code. Each ball both sides pick 1-6 at once; the same
+-- number is OUT, otherwise the batter scores their number.
+--
+-- A pick waiting for the other side sits in pick1 / pick2 and is NEVER sent to
+-- the opponent: the server only reveals both once both are in. That is the
+-- whole fairness model, for a friend and for the bot alike - the bot chooses
+-- from the balls already played, never from the pick it is answering.
+
+CREATE TABLE cricket_matches (
+  id              bigserial   PRIMARY KEY,
+  mode            text        NOT NULL CHECK (mode IN ('bot','friend')),
+  -- The invite code, friend matches only. Six characters from the room-code
+  -- alphabet, so it reads aloud the same way a Tambola code does.
+  code            text        UNIQUE,
+  host_player_id  bigint      NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  guest_player_id bigint      REFERENCES players(id) ON DELETE SET NULL,
+  bot_level       text        CHECK (bot_level IN ('easy','medium','hard')),
+  overs           int         NOT NULL DEFAULT 2,
+  wickets         int         NOT NULL DEFAULT 2,
+  status          text        NOT NULL DEFAULT 'waiting'
+                              CHECK (status IN ('waiting','toss','choose','playing','finished','abandoned')),
+  -- The toss: the caller says odd or even, both pick a number, the sum decides.
+  toss_call       text        CHECK (toss_call IN ('odd','even')),
+  toss_winner     smallint,
+  bat_first       smallint,
+  innings         smallint    NOT NULL DEFAULT 1,
+  -- By innings, not by side: runs1 is the first innings whoever batted in it.
+  runs1           int         NOT NULL DEFAULT 0,
+  wkts1           int         NOT NULL DEFAULT 0,
+  balls1          int         NOT NULL DEFAULT 0,
+  runs2           int         NOT NULL DEFAULT 0,
+  wkts2           int         NOT NULL DEFAULT 0,
+  balls2          int         NOT NULL DEFAULT 0,
+  pick1           smallint,
+  pick2           smallint,
+  -- Moves on with every resolved toss or ball. A page answering an old turn
+  -- is refused rather than counted twice.
+  turn            int         NOT NULL DEFAULT 0,
+  winner          smallint,
+  result          text,
+  -- A rematch is a new match; the old one points at it so the other player's
+  -- page can offer it.
+  rematch_id      bigint,
+  lang            text        NOT NULL DEFAULT 'en' CHECK (lang IN ('en','hi')),
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  started_at      timestamptz,
+  finished_at     timestamptz,
+  last_move_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX cricket_matches_host_idx  ON cricket_matches (host_player_id, created_at DESC);
+CREATE INDEX cricket_matches_guest_idx ON cricket_matches (guest_player_id, created_at DESC);
+CREATE INDEX cricket_matches_created_idx ON cricket_matches (created_at DESC);
+
+CREATE TABLE cricket_balls (
+  id          bigserial   PRIMARY KEY,
+  match_id    bigint      NOT NULL REFERENCES cricket_matches(id) ON DELETE CASCADE,
+  innings     smallint    NOT NULL,
+  ball_no     int         NOT NULL,
+  batter      smallint    NOT NULL,
+  bat_pick    smallint    NOT NULL,
+  bowl_pick   smallint    NOT NULL,
+  runs        smallint    NOT NULL,
+  is_out      boolean     NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (match_id, innings, ball_no)
+);
+CREATE INDEX cricket_balls_match_idx ON cricket_balls (match_id, innings, ball_no);

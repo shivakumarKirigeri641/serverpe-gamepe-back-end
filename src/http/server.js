@@ -13,6 +13,7 @@ import { webhookRoutes } from "./webhook.routes.js";
 import { policiesPage } from "./policies-page.js";
 import { boardRoutes } from "./board.routes.js";
 import { fatafatRoutes } from "./fatafat.routes.js";
+import { cricketRoutes } from "./cricket.routes.js";
 import { adminRoutes } from "./admin.routes.js";
 import { publicRoutes } from "./public.routes.js";
 import { formsRoutes } from "./forms.routes.js";
@@ -152,6 +153,7 @@ export function createApp() {
 
   api.use(boardRoutes());
   api.use(fatafatRoutes());
+  api.use(cricketRoutes());
   api.use(webhookRoutes());
 
   app.use(config.apiBasePath, api);

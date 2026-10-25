@@ -42,6 +42,9 @@ export function webPlayPage({
   // should leave a switched-off game off, not advertise it back into
   // existence.
   bakraAvailable = false,
+  // Hand Cricket (2026-10-25): its card, and a friend's invite code from ?cricket=CODE.
+  cricketAvailable = false,
+  cricketCode = "",
 } = {}) {
   const policies = String(config.policiesUrl || "https://mastipe.in/policies").replace(/\/+$/, "");
 
@@ -93,7 +96,7 @@ small{color:var(--muted)}
     <h1>Play on the web</h1>
     <p>No app needed. Sign in with your mobile number, then host a game${
       bakraAvailable ? ", join one, or play Tap Bakra" : " or join one"
-    }.</p>
+    }${cricketAvailable ? " - or play Hand Cricket" : ""}.</p>
 
     <!-- ── unavailable ──────────────────────────────────────────────── -->
     <section class="card hidden" id="unavailable">
@@ -114,8 +117,8 @@ small{color:var(--muted)}
       visitor, and the number actually worth having.
     -->
     <section class="card hidden" id="stepGuest">
-      <h2>Join the game</h2>
-      <p>Room <b id="guestCode"></b>. Just your name - no number needed.</p>
+      <h2 id="guestTitle">Join the game</h2>
+      <p><span id="guestWhat">Room</span> <b id="guestCode"></b>. Just your name - no number needed.</p>
       <div class="row">
         <div>
           <label>Your name - shown to the other players</label>
@@ -234,11 +237,40 @@ small{color:var(--muted)}
       </section>`
           : ""
       }
+
+      ${
+        cricketAvailable
+          ? `<section class="card" id="cricketCard">
+        <h2>🏏 Hand Cricket</h2>
+        <p>Show a number from 1 to 6 - same number as the bowler and you are OUT. Two overs, two wickets, then chase.</p>
+        <div class="row cols-2">
+          <div>
+            <label>Against the bot</label>
+            <select id="crLevel">
+              <option value="easy">Easy</option>
+              <option value="medium" selected>Medium</option>
+              <option value="hard">Hard</option>
+            </select>
+          </div>
+          <button id="crBotBtn" style="align-self:end">Play vs bot</button>
+        </div>
+        <div class="row cols-2">
+          <button class="alt" id="crFriendBtn">Play a friend</button>
+          <div style="display:flex;gap:8px">
+            <input id="crCode" maxlength="10" autocapitalize="characters" placeholder="Match code" value="${esc(cricketCode)}" />
+            <button class="alt" id="crJoinBtn">Join</button>
+          </div>
+        </div>
+        <small>Play a friend gives you a link to send them on WhatsApp - they join with just a name.</small>
+        <div id="crMsg" class="msg"></div>
+      </section>`
+          : ""
+      }
     </div>
   </div>
 
 <script>
-window.__PLAY__ = ${blob({ mode, prefillCode, signInAvailable, otpLength })};
+window.__PLAY__ = ${blob({ mode, prefillCode, signInAvailable, otpLength, cricketCode })};
 (function(){
   var CFG = window.__PLAY__;
   var TOKEN_KEY = 'mastipe.play.token';
@@ -431,6 +463,8 @@ window.__PLAY__ = ${blob({ mode, prefillCode, signInAvailable, otpLength })};
     // Arrived from an invite link: take them straight to the room they were
     // invited to, rather than making them find the Join button and press it.
     if (justSignedIn && CFG.prefillCode) join();
+    // The same for a Hand Cricket invite - signed in already, or just now.
+    else if (CFG.cricketCode) crJoin();
   }
 
   function goTo(url){ location.href = url; }
@@ -481,6 +515,27 @@ ${
     : "  // The second game is switched off; its handler is not emitted."
 }
 
+  /* Hand Cricket. Defined even when the card is left out, so an invite arriving
+     while the game is off answers with the server's honest refusal instead of a
+     script error. */
+  function crLang(){ return (navigator.language || 'en').toLowerCase().indexOf('hi') === 0 ? 'hi' : 'en'; }
+  function crGo(path, body, btn, label){
+    if (btn) busy(btn, true, 'Starting...');
+    show($('crMsg'), '');
+    return call('POST', path, body)
+      .then(function(out){ goTo(out.url); })
+      .catch(function(err){ if (!signedOut(err)) show($('crMsg') || $('guestMsg'), err.message); })
+      .then(function(){ if (btn) busy(btn, false, label); });
+  }
+  function crBot(){ crGo('/public/play/cricket/bot', { level: $('crLevel').value, lang: crLang() }, $('crBotBtn'), 'Play vs bot'); }
+  function crFriend(){ crGo('/public/play/cricket/friend', { lang: crLang() }, $('crFriendBtn'), 'Play a friend'); }
+  function crJoin(){
+    var box = $('crCode');
+    var code = String((box && box.value) || CFG.cricketCode || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    if (!code) { show($('crMsg'), 'Enter the match code.'); return; }
+    crGo('/public/play/cricket/join', { code: code }, $('crJoinBtn'), 'Join');
+  }
+
   function logout(){
     call('POST', '/public/play/logout').catch(function(){}).then(function(){
       memToken = null; clearToken();
@@ -510,7 +565,9 @@ ${
         reached = 'done';
         // Straight into the room they were invited to. They came from a link
         // with a code in it; making them now find and press Join would be a
-        // step for nothing.
+        // step for nothing. A Hand Cricket invite goes to its match instead.
+        if (CFG.cricketCode) return call('POST', '/public/play/cricket/join', { code: CFG.cricketCode })
+          .then(function(out){ return { boardUrl: out.url }; });
         return call('POST', '/public/play/join', { code: CFG.prefillCode });
       })
       .then(function(out){ show($('guestMsg'), 'Opening your game room...', true); goTo(out.boardUrl); })
@@ -534,6 +591,7 @@ ${
   // takes down every handler below it - including sign-in. One switched-off
   // game must not cost anybody the ability to log in.
 ${bakraAvailable ? "  $('bakraBtn').onclick = bakra;" : ''}
+${cricketAvailable ? "  $('crBotBtn').onclick = crBot;\n  $('crFriendBtn').onclick = crFriend;\n  $('crJoinBtn').onclick = crJoin;" : ''}
   $('logoutBtn').onclick = logout;
 
   /* ── start ──────────────────────────────────────────────────────────── */
@@ -568,7 +626,19 @@ ${bakraAvailable ? "  $('bakraBtn').onclick = bakra;" : ''}
    * game already being set up can still fill. That is deliberate: it would be
    * perverse for the room to empty because of something only the host needs.
    */
-  var invited = !!CFG.prefillCode;
+  var invited = !!(CFG.prefillCode || CFG.cricketCode);
+  // A Hand Cricket invite says so on the welcome card.
+  function guestCard(){
+    if (CFG.cricketCode) {
+      $('guestTitle').textContent = 'Your friend challenged you to Hand Cricket';
+      $('guestWhat').textContent = 'Match';
+      $('guestCode').textContent = CFG.cricketCode;
+      $('guestBtn').textContent = 'Play';
+    } else {
+      $('guestCode').textContent = CFG.prefillCode;
+    }
+    screen('stepGuest');
+  }
 
   if (memToken) {
     call('GET', '/public/play/me').then(function(me){
@@ -576,13 +646,12 @@ ${bakraAvailable ? "  $('bakraBtn').onclick = bakra;" : ''}
     }).catch(function(){
       // An expired or revoked session is ordinary; start again.
       memToken = null; clearToken();
-      if (invited) { $('guestCode').textContent = CFG.prefillCode; screen('stepGuest'); }
+      if (invited) guestCard();
       else if (!CFG.signInAvailable) screen('unavailable');
       else screen('stepPhone');
     });
   } else if (invited) {
-    $('guestCode').textContent = CFG.prefillCode;
-    screen('stepGuest');
+    guestCard();
   } else if (!CFG.signInAvailable) {
     screen('unavailable');
   } else {
