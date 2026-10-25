@@ -89,14 +89,21 @@ small{color:var(--muted)}
 .who{display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap}
 .pill{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 10px}
 .return{border-color:rgba(245,184,61,.5)}
+.games{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+button.game{display:flex;flex-direction:column;align-items:flex-start;gap:4px;text-align:left;padding:16px;background:#141a22;color:var(--ink);border:1px solid var(--line);font-weight:600}
+button.game:hover{border-color:var(--brand)}
+button.game span{font-size:30px;line-height:1}
+button.game b{font-size:17px}
+button.game small{font-weight:400}
+button.link.back{margin-top:12px}
 </style>
 </head>
 <body>
   <div class="wrap">
     <h1>Play on the web</h1>
-    <p>No app needed. Sign in with your mobile number, then host a game${
-      bakraAvailable ? ", join one, or play Tap Bakra" : " or join one"
-    }${cricketAvailable ? " - or play Hand Cricket" : ""}.</p>
+    <p>No app needed. Sign in with your mobile number, then choose your game${
+      bakraAvailable || cricketAvailable ? "" : ": host a Tambola room or join one"
+    } - one game at a time.</p>
 
     <!-- ── unavailable ──────────────────────────────────────────────── -->
     <section class="card hidden" id="unavailable">
@@ -190,12 +197,30 @@ small{color:var(--muted)}
         </div>
       </section>
 
+      <!-- One game at a time (2026-10-25): the game they are in, and nothing else until they leave it. -->
       <section class="card return hidden" id="activeCard">
-        <h2>You are in a game</h2>
-        <p>Room <b id="activeCode"></b> - your seat is waiting.</p>
-        <div class="row"><button id="activeBtn">Go back to your game</button></div>
+        <h2 id="activeTitle">You are in a game</h2>
+        <p id="activeText">Your seat is waiting.</p>
+        <div class="row cols-2">
+          <button id="activeBtn">Go back to your game</button>
+          <button class="alt" id="leaveBtn">Leave it and choose another game</button>
+        </div>
+        <small>One game at a time - finish or leave this one to play another.</small>
+        <div id="activeMsg" class="msg"></div>
       </section>
 
+      <!-- Which game? Asked after sign-in (2026-10-25). -->
+      <section class="card hidden" id="chooser">
+        <h2>Which game do you want to play?</h2>
+        <div class="row games">
+          <button class="game" data-game="tambola"><span>🎱</span><b>Tambola</b><small>Host a room or join one with a code</small></button>
+          ${cricketAvailable ? '<button class="game" data-game="cricket"><span>🏏</span><b>Hand Cricket</b><small>Play the bot or a friend</small></button>' : ""}
+          ${bakraAvailable ? '<button class="game" data-game="bakra"><span>🐐</span><b>Tap Bakra</b><small>Ten questions, sixty seconds</small></button>' : ""}
+        </div>
+      </section>
+
+      <div class="hidden" id="gTambola">
+      <button class="link back">&larr; Choose another game</button>
       <div class="split">
         <section class="card">
           <h2>Host a Tambola game</h2>
@@ -224,23 +249,29 @@ small{color:var(--muted)}
           </div>
         </section>
       </div>
+      </div>
 
       ${
         bakraAvailable
-          ? `<section class="card">
+          ? `<div class="hidden" id="gBakra">
+      <button class="link back">&larr; Choose another game</button>
+      <section class="card">
         <h2>Tap Bakra</h2>
         <p>Tap fast, think faster. Ten questions, sixty seconds, on your own.</p>
         <div class="row">
           <button id="bakraBtn">Play Tap Bakra</button>
           <div id="bakraMsg" class="msg"></div>
         </div>
-      </section>`
+      </section>
+      </div>`
           : ""
       }
 
       ${
         cricketAvailable
-          ? `<section class="card" id="cricketCard">
+          ? `<div class="hidden" id="gCricket">
+      <button class="link back">&larr; Choose another game</button>
+      <section class="card" id="cricketCard">
         <h2>🏏 Hand Cricket</h2>
         <p>Show a number from 1 to 6 - same number as the bowler and you are OUT. Two overs, two wickets, then chase.</p>
         <div class="row cols-2">
@@ -263,7 +294,8 @@ small{color:var(--muted)}
         </div>
         <small>Play a friend gives you a link to send them on WhatsApp - they join with just a name.</small>
         <div id="crMsg" class="msg"></div>
-      </section>`
+      </section>
+      </div>`
           : ""
       }
     </div>
@@ -301,6 +333,7 @@ window.__PLAY__ = ${blob({ mode, prefillCode, signInAvailable, otpLength, cricke
           var err = new Error(payload.error || ('Something went wrong (' + res.status + ')'));
           err.code = payload.code; err.status = res.status;
           err.retryAfter = payload.retryAfterSeconds;
+          err.activeGame = payload.activeGame;
           throw err;
         }
         return payload.data || payload;
@@ -449,22 +482,68 @@ window.__PLAY__ = ${blob({ mode, prefillCode, signInAvailable, otpLength, cricke
     reached = 'done';
     $('hello').textContent = player && player.name ? ('Hi, ' + player.name) : 'Welcome';
     $('whoPhone').textContent = player ? player.phone : '';
-
-    var card = $('activeCard');
-    if (active && active.boardUrl) {
-      $('activeCode').textContent = active.code;
-      $('activeBtn').onclick = function(){ location.href = active.boardUrl; };
-      card.classList.remove('hidden');
-    } else {
-      card.classList.add('hidden');
-    }
     screen('home');
+
+    // Already in a game: that game only (one number, one game at a time). An
+    // invite to the very same room or match still goes straight in.
+    var sameInvite = active && ((active.kind === 'tambola' && CFG.prefillCode && active.code === CFG.prefillCode)
+      || (active.kind === 'cricket' && CFG.cricketCode && active.code === CFG.cricketCode));
+    if (active && active.url && !sameInvite) { showActive(active); return; }
+    if (sameInvite) { goTo(active.url); return; }
 
     // Arrived from an invite link: take them straight to the room they were
     // invited to, rather than making them find the Join button and press it.
-    if (justSignedIn && CFG.prefillCode) join();
+    if (CFG.prefillCode) { pickGame('tambola'); if (justSignedIn) join(); }
     // The same for a Hand Cricket invite - signed in already, or just now.
-    else if (CFG.cricketCode) crJoin();
+    else if (CFG.cricketCode) { pickGame('cricket'); crJoin(); }
+    else chooseGame();
+  }
+
+  /* ── which game, one at a time (2026-10-25) ─────────────────────────── */
+
+  var GROUPS = { tambola: 'gTambola', cricket: 'gCricket', bakra: 'gBakra' };
+  function games(){ return Object.keys(GROUPS).filter(function(g){ return !!$(GROUPS[g]); }); }
+  function hideAll(){
+    $('activeCard').classList.add('hidden');
+    $('chooser').classList.add('hidden');
+    games().forEach(function(g){ $(GROUPS[g]).classList.add('hidden'); });
+  }
+  function chooseGame(){
+    // With only one game on offer there is nothing to choose.
+    if (games().length < 2) { pickGame(games()[0] || 'tambola'); return; }
+    hideAll();
+    $('chooser').classList.remove('hidden');
+  }
+  function pickGame(g){
+    if (!$(GROUPS[g])) return;
+    hideAll();
+    $(GROUPS[g]).classList.remove('hidden');
+    var back = $(GROUPS[g]).querySelector('.back');
+    if (back) back.classList.toggle('hidden', games().length < 2);
+  }
+  function showActive(active){
+    hideAll();
+    $('activeTitle').textContent = 'You are in a ' + (active.name || 'game') + (active.kind === 'cricket' ? ' match' : ' game');
+    $('activeText').textContent = active.code
+      ? ((active.kind === 'cricket' ? 'Match ' : 'Room ') + active.code + ' - your seat is waiting.')
+      : 'Your match is waiting.';
+    $('activeBtn').onclick = function(){ goTo(active.url); };
+    show($('activeMsg'), '');
+    $('activeCard').classList.remove('hidden');
+  }
+  function leaveCurrent(){
+    var btn = $('leaveBtn');
+    busy(btn, true, 'Leaving...');
+    call('POST', '/public/play/leave')
+      .then(function(){ chooseGame(); })
+      .catch(function(err){ if (!signedOut(err)) show($('activeMsg'), err.message); })
+      .then(function(){ busy(btn, false, 'Leave it and choose another game'); });
+  }
+  // A start refused because they are already in another game shows that game.
+  function refused(err, box){
+    if (signedOut(err)) return;
+    if (err.code === 'in_another_game' && err.activeGame) { showActive(err.activeGame); return; }
+    show(box, err.message);
   }
 
   function goTo(url){ location.href = url; }
@@ -484,7 +563,7 @@ window.__PLAY__ = ${blob({ mode, prefillCode, signInAvailable, otpLength, cricke
     show($('hostMsg'), '');
     call('POST', '/public/play/host', { expectedPlayers: Number($('hostPlayers').value) })
       .then(function(out){ show($('hostMsg'), 'Opening your game room...', true); goTo(out.boardUrl); })
-      .catch(function(err){ if (!signedOut(err)) show($('hostMsg'), err.message); })
+      .catch(function(err){ refused(err, $('hostMsg')); })
       .then(function(){ busy(btn, false, 'Create game'); });
   }
 
@@ -496,7 +575,7 @@ window.__PLAY__ = ${blob({ mode, prefillCode, signInAvailable, otpLength, cricke
     show($('joinMsg'), '');
     call('POST', '/public/play/join', { code: code })
       .then(function(out){ show($('joinMsg'), 'Opening your game room...', true); goTo(out.boardUrl); })
-      .catch(function(err){ if (!signedOut(err)) show($('joinMsg'), err.message); })
+      .catch(function(err){ refused(err, $('joinMsg')); })
       .then(function(){ busy(btn, false, 'Join game'); });
   }
 
@@ -509,7 +588,7 @@ ${
     var lang = (navigator.language || 'en').toLowerCase().indexOf('hi') === 0 ? 'hi' : 'en';
     call('POST', '/public/play/bakra', { lang: lang })
       .then(function(out){ goTo(out.url); })
-      .catch(function(err){ if (!signedOut(err)) show($('bakraMsg'), err.message); })
+      .catch(function(err){ refused(err, $('bakraMsg')); })
       .then(function(){ busy(btn, false, 'Play Tap Bakra'); });
   }`
     : "  // The second game is switched off; its handler is not emitted."
@@ -524,7 +603,7 @@ ${
     show($('crMsg'), '');
     return call('POST', path, body)
       .then(function(out){ goTo(out.url); })
-      .catch(function(err){ if (!signedOut(err)) show($('crMsg') || $('guestMsg'), err.message); })
+      .catch(function(err){ refused(err, $('crMsg') || $('guestMsg')); })
       .then(function(){ if (btn) busy(btn, false, label); });
   }
   function crBot(){ crGo('/public/play/cricket/bot', { level: $('crLevel').value, lang: crLang() }, $('crBotBtn'), 'Play vs bot'); }
@@ -593,6 +672,11 @@ ${
 ${bakraAvailable ? "  $('bakraBtn').onclick = bakra;" : ''}
 ${cricketAvailable ? "  $('crBotBtn').onclick = crBot;\n  $('crFriendBtn').onclick = crFriend;\n  $('crJoinBtn').onclick = crJoin;" : ''}
   $('logoutBtn').onclick = logout;
+  $('leaveBtn').onclick = leaveCurrent;
+  Array.prototype.forEach.call(document.querySelectorAll('button.game'), function(b){
+    b.onclick = function(){ pickGame(b.getAttribute('data-game')); };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('button.back'), function(b){ b.onclick = chooseGame; });
 
   /* ── start ──────────────────────────────────────────────────────────── */
 
