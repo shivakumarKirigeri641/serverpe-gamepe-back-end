@@ -26,11 +26,16 @@ import {
   createBotMatch,
   createFriendMatch,
   joinByCode,
+  findActiveMatchForPlayer,
+  getMatch,
+  sideOf,
+  leave as leaveMatch,
   CricketError,
 } from "../services/cricket.service.js";
 import {
   createGame,
   joinGame,
+  leaveGame,
   findActiveGameForPlayer,
   GameError,
 } from "../services/game.service.js";
@@ -499,29 +504,75 @@ export function publicRoutes() {
 
   const signedIn = requirePlayer();
 
+  /*
+   * ── One number, one game at a time (user, 2026-10-25) ──────────────────
+   *
+   * "After sign-in it should ask which game to play - one mobile number to one
+   * game, otherwise a user starts two games at a time, which makes no sense."
+   * The game they are in - a Tambola room in the lobby or running, or a Hand
+   * Cricket match still being played - is the only one they can open until
+   * they finish it or leave it. Re-opening that same game is always allowed.
+   */
+  async function currentGame(req) {
+    const root = requestPublicRoot(req);
+    const g = await findActiveGameForPlayer(req.player.id);
+    if (g) {
+      const url = boardUrl(g.id, req.player.id, root);
+      return { kind: "tambola", name: "Tambola", id: Number(g.id), code: g.code, status: g.status, url, boardUrl: url };
+    }
+    if (cricketEnabled()) {
+      const m = await findActiveMatchForPlayer(req.player.id);
+      if (m) {
+        const url = cricketUrl(m.id, req.player.id, root);
+        return { kind: "cricket", name: "Hand Cricket", id: Number(m.id), code: m.code || null,
+          mode: m.mode, status: m.status, url, boardUrl: url };
+      }
+    }
+    return null;
+  }
+
+  /** Refuses (409) when they are in a game other than `same`; true when it answered. */
+  async function inAnotherGame(req, res, same = {}) {
+    const g = await currentGame(req);
+    if (!g) return false;
+    if (same.kind === g.kind && same.code && g.code && same.code === g.code) return false;
+    res.status(409).json({
+      error: `You are already in a ${g.name} game. Go back to it, or leave it first - one game at a time.`,
+      code: "in_another_game",
+      activeGame: g,
+    });
+    return true;
+  }
+
   /** Who is signed in, and whether they are already sitting in a game. */
   router.get(
     "/public/play/me",
     webOnly,
     signedIn,
     wrap(async (req, res) => {
-      const active = await findActiveGameForPlayer(req.player.id);
-      ok(
-        res,
-        {
-          player: publicPlayer(req.player),
-          // Offered back, so reopening the page mid-game takes them straight
-          // to their seat instead of to a form that would give them a second.
-          activeGame: active
-            ? {
-                code: active.code,
-                status: active.status,
-                boardUrl: boardUrl(active.id, req.player.id, requestPublicRoot(req)),
-              }
-            : null,
-        },
-        0,
-      );
+      // Offered back, so reopening the page mid-game takes them straight to
+      // their seat instead of to a form that would give them a second.
+      ok(res, { player: publicPlayer(req.player), activeGame: await currentGame(req) }, 0);
+    }),
+  );
+
+  /** Leave the game they are in, to play another. */
+  router.post(
+    "/public/play/leave",
+    webOnly,
+    signedIn,
+    wrap(async (req, res) => {
+      const g = await currentGame(req);
+      if (g?.kind === "tambola") await leaveGame({ gameId: g.id, playerId: req.player.id });
+      if (g?.kind === "cricket") {
+        const m = await getMatch(g.id);
+        if (m) await leaveMatch(m.id, sideOf(m, req.player.id));
+      }
+      if (g) {
+        await recordEvent({ type: "game.left_for_another", source: "web", playerId: req.player.id,
+          properties: { kind: g.kind, id: g.id } });
+      }
+      ok(res, { left: g ? g.kind : null }, 0);
     }),
   );
 
@@ -545,6 +596,7 @@ export function publicRoutes() {
     wrap(async (req, res) => {
       const expectedPlayers = Number(req.body?.expectedPlayers);
       const player = req.player;
+      if (await inAnotherGame(req, res)) return;
 
       let game;
       try {
@@ -592,6 +644,7 @@ export function publicRoutes() {
       const code = normaliseRoomCode(req.body?.code);
       if (!code)
         return res.status(400).json({ error: "Game code is required" });
+      if (await inAnotherGame(req, res, { kind: "tambola", code })) return;
 
       // The signed-in player, not a fresh one. This is what makes a second tap
       // on the same invite return the seat they already have instead of
@@ -659,6 +712,7 @@ export function publicRoutes() {
       if (!bakraEnabled()) {
         return res.status(403).json({ error: "Tap Bakra is not available right now" });
       }
+      if (await inAnotherGame(req, res)) return;
       const lang = req.body?.lang === "hi" ? "hi" : "en";
       const round = await createRound(req.player.id, lang);
       await recordEvent({
@@ -697,6 +751,7 @@ export function publicRoutes() {
     signedIn,
     cricketOn,
     wrap(async (req, res) => {
+      if (await inAnotherGame(req, res)) return;
       const lang = req.body?.lang === "hi" ? "hi" : "en";
       const level = String(req.body?.level || "medium");
       const m = await createBotMatch(req.player.id, level, lang);
@@ -714,6 +769,7 @@ export function publicRoutes() {
     signedIn,
     cricketOn,
     wrap(async (req, res) => {
+      if (await inAnotherGame(req, res)) return;
       try {
         const lang = req.body?.lang === "hi" ? "hi" : "en";
         const m = await createFriendMatch(req.player.id, lang);
@@ -738,6 +794,7 @@ export function publicRoutes() {
     wrap(async (req, res) => {
       const code = normaliseRoomCode(req.body?.code);
       if (!code) return res.status(400).json({ error: "Match code is required" });
+      if (await inAnotherGame(req, res, { kind: "cricket", code })) return;
       try {
         const m = await joinByCode(code, req.player.id);
         await recordEvent({ type: "cricket.joined", source: "web", playerId: req.player.id,

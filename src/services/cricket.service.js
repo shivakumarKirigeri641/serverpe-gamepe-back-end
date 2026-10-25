@@ -102,6 +102,22 @@ export async function joinByCode(code, playerId) {
   });
 }
 
+/**
+ * The match this player is in right now, or null - for "one number, one game at a time"
+ * (2026-10-25). Only a match being played counts: one left untouched past its stale time
+ * (a bot match too, whose tab was simply closed) never holds anybody back.
+ */
+export async function findActiveMatchForPlayer(playerId) {
+  const { rows } = await query(
+    `SELECT * FROM cricket_matches
+      WHERE (host_player_id = $1 OR guest_player_id = $1)
+        AND status IN ('waiting','toss','choose','playing')
+        AND last_move_at > now() - (CASE WHEN status = 'waiting' THEN $2 ELSE $3 END || ' minutes')::interval
+      ORDER BY created_at DESC LIMIT 1`,
+    [playerId, String(STALE_MINUTES.waiting), String(STALE_MINUTES.live)]);
+  return rows[0] ?? null;
+}
+
 export async function getMatch(id) {
   const { rows } = await query('SELECT * FROM cricket_matches WHERE id = $1', [id]);
   return rows[0] ?? null;
