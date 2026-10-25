@@ -20,7 +20,14 @@ import {
   maintenance,
   playChannel,
   bakraEnabled,
+  cricketEnabled,
 } from "../services/settings.service.js";
+import {
+  createBotMatch,
+  createFriendMatch,
+  joinByCode,
+  CricketError,
+} from "../services/cricket.service.js";
 import {
   createGame,
   joinGame,
@@ -31,6 +38,8 @@ import {
   boardUrl,
   normaliseRoomCode,
   signRoundToken,
+  cricketUrl,
+  cricketInviteUrl,
 } from "../utils/code.js";
 import { recordEvent } from "../services/tracking.service.js";
 import {
@@ -132,6 +141,7 @@ export function publicRoutes() {
         games: {
           tambola: true,
           bakra: bakraEnabled(),
+          cricket: cricketEnabled(),
         },
         /**
          * The brand set, served from src/images.
@@ -300,10 +310,14 @@ export function publicRoutes() {
     wrap(async (req, res) => {
       const play = playChannel();
       const code = normaliseRoomCode(String(req.query.code || ""));
+      // A Hand Cricket invite: ?cricket=CODE. The friend gets the same name-and-in welcome a Tambola invite gets.
+      const cricketCode = cricketEnabled() ? normaliseRoomCode(String(req.query.cricket || "")) : "";
       res.type("html").send(
         webPlayPage({
           mode: play.mode,
           prefillCode: code,
+          cricketCode,
+          cricketAvailable: cricketEnabled(),
           // Told up front, so a deployment with no SMS provider says so on
           // the first screen instead of after somebody types their number.
           signInAvailable: smsReady(),
@@ -660,6 +674,77 @@ export function publicRoutes() {
         },
         0,
       );
+    }),
+  );
+
+  /* ── Hand Cricket ─────────────────────────────────────────────────────── */
+
+  /**
+   * Refused rather than hidden when the game is off, like Tap Bakra: the page
+   * leaves the buttons out, so reaching these is a stale tab or a direct call.
+   */
+  const cricketOn = (_req, res, next) =>
+    cricketEnabled() ? next() : res.status(403).json({ error: "Hand Cricket is not available right now" });
+  const cricketFail = (res, err) => {
+    if (err instanceof CricketError) return res.status(400).json({ error: err.message, code: err.code });
+    throw err;
+  };
+
+  /** Against the bot: easy, medium or hard. */
+  router.post(
+    "/public/play/cricket/bot",
+    webOnly,
+    signedIn,
+    cricketOn,
+    wrap(async (req, res) => {
+      const lang = req.body?.lang === "hi" ? "hi" : "en";
+      const level = String(req.body?.level || "medium");
+      const m = await createBotMatch(req.player.id, level, lang);
+      await recordEvent({ type: "cricket.started", source: "web", playerId: req.player.id,
+        properties: { matchId: Number(m.id), mode: "bot", level: m.bot_level, lang } });
+      await recordStep({ step: "cricket_bot", req, playerId: req.player.id, extra: { level: m.bot_level } });
+      ok(res, { url: cricketUrl(m.id, req.player.id, requestPublicRoot(req)) }, 0);
+    }),
+  );
+
+  /** With a friend: a match code and a link to send them. */
+  router.post(
+    "/public/play/cricket/friend",
+    webOnly,
+    signedIn,
+    cricketOn,
+    wrap(async (req, res) => {
+      try {
+        const lang = req.body?.lang === "hi" ? "hi" : "en";
+        const m = await createFriendMatch(req.player.id, lang);
+        await recordEvent({ type: "cricket.started", source: "web", playerId: req.player.id,
+          properties: { matchId: Number(m.id), mode: "friend", code: m.code, lang } });
+        await recordStep({ step: "cricket_friend", req, playerId: req.player.id, extra: { code: m.code } });
+        ok(res, {
+          url: cricketUrl(m.id, req.player.id, requestPublicRoot(req)),
+          code: m.code,
+          inviteUrl: cricketInviteUrl(m.code, requestPublicRoot(req)),
+        }, 0);
+      } catch (err) { cricketFail(res, err); }
+    }),
+  );
+
+  /** The friend joining with the code - signed in, or as a guest with just a name. */
+  router.post(
+    "/public/play/cricket/join",
+    webOnly,
+    signedIn,
+    cricketOn,
+    wrap(async (req, res) => {
+      const code = normaliseRoomCode(req.body?.code);
+      if (!code) return res.status(400).json({ error: "Match code is required" });
+      try {
+        const m = await joinByCode(code, req.player.id);
+        await recordEvent({ type: "cricket.joined", source: "web", playerId: req.player.id,
+          properties: { matchId: Number(m.id), code } });
+        await recordStep({ step: "cricket_joined", req, playerId: req.player.id, extra: { code } });
+        ok(res, { url: cricketUrl(m.id, req.player.id, requestPublicRoot(req)) }, 0);
+      } catch (err) { cricketFail(res, err); }
     }),
   );
 

@@ -19,6 +19,7 @@ export const KEYS = {
   MAINTENANCE: "maintenance",
   PLAY_CHANNEL_MODE: "play_channel_mode",
   BAKRA_ENABLED: "bakra_enabled",
+  CRICKET_ENABLED: "cricket_enabled",
 };
 
 const cache = new Map();
@@ -254,15 +255,42 @@ export function bakraEnabled() {
   return String(raw) === "true";
 }
 
+/** Whether Hand Cricket is offered to players. The same switch shape as Tap Bakra's, for the same reasons. */
+export function cricketEnabled() {
+  const raw = effective(KEYS.CRICKET_ENABLED, config.game.cricketEnabled ? "true" : "false");
+  return String(raw) === "true";
+}
+
 /** Everything a page or an API response needs to decide what to show. */
 export function gameVisibility() {
   const channel = playChannel();
   return {
     tambola: true,
     bakra: bakraEnabled(),
+    cricket: cricketEnabled(),
     channel: channel.mode,
     ...meta(KEYS.BAKRA_ENABLED),
+    cricketMeta: meta(KEYS.CRICKET_ENABLED),
   };
+}
+
+/**
+ * Switch the side games on or off from the panel. Only the keys sent are
+ * changed, and only to a real boolean - Boolean("false") is true.
+ */
+export async function setGamesEnabled({ bakra, cricket } = {}, updatedBy) {
+  const flag = (v) => (v === true || v === "true" ? true : v === false || v === "false" ? false : null);
+  if (bakra !== undefined) {
+    const v = flag(bakra);
+    if (v === null) throw new Error("Tap Bakra visibility must be true or false");
+    await setSetting(KEYS.BAKRA_ENABLED, v ? "true" : "false", updatedBy);
+  }
+  if (cricket !== undefined) {
+    const v = flag(cricket);
+    if (v === null) throw new Error("Hand Cricket visibility must be true or false");
+    await setSetting(KEYS.CRICKET_ENABLED, v ? "true" : "false", updatedBy);
+  }
+  return gameVisibility();
 }
 
 export async function setBakraEnabled(enabled, updatedBy) {

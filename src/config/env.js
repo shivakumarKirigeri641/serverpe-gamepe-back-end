@@ -445,6 +445,9 @@ export const config = {
      * a deployment wants it off before it has a database to configure.
      */
     bakraEnabled: optional("BAKRA_ENABLED", "true") !== "false",
+
+    /** Whether Hand Cricket is offered to players - ON by default, like Tap Bakra; the panel's switch overrides it. */
+    cricketEnabled: optional("CRICKET_ENABLED", "true") !== "false",
   },
 };
 

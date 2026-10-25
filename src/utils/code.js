@@ -151,3 +151,38 @@ export function verifyRoundToken(token) {
 export function fatafatUrl(roundId, playerId) {
   return `${config.publicRoot}/fatafat/${signRoundToken(roundId, playerId)}`;
 }
+
+/**
+ * Hand Cricket: one MATCH and one PLAYER, namespaced like Fatafat's so a board
+ * or a round token can never verify as a cricket one. Both sides of a friend
+ * match hold their own link; editing it to the other side fails the signature.
+ */
+export function signCricketToken(matchId, playerId) {
+  return `c${matchId}.${playerId}.${sign(`cricket:${matchId}.${playerId}`)}`;
+}
+
+export function verifyCricketToken(token) {
+  const parts = String(token ?? "").split(".");
+  if (parts.length !== 3) return null;
+  const [rawMatch, playerId, signature] = parts;
+  if (!rawMatch.startsWith("c")) return null;
+  const matchId = rawMatch.slice(1);
+  const expected = sign(`cricket:${matchId}.${playerId}`);
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  const ids = { matchId: Number(matchId), playerId: Number(playerId) };
+  if (!Number.isInteger(ids.matchId) || ids.matchId <= 0) return null;
+  if (!Number.isInteger(ids.playerId) || ids.playerId <= 0) return null;
+  return ids;
+}
+
+/** The page one player plays one match on. */
+export function cricketUrl(matchId, playerId, baseRoot = null) {
+  return `${baseRoot || config.publicRoot}/cricket/${signCricketToken(matchId, playerId)}`;
+}
+
+/** What a friend is sent: the play page with the match code, where a name is enough to join. */
+export function cricketInviteUrl(code, baseRoot = null) {
+  return `${baseRoot || config.publicRoot}/public/play?cricket=${encodeURIComponent(code)}`;
+}

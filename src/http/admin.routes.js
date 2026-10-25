@@ -28,6 +28,7 @@ import {
 } from "../services/admin-session.service.js";
 import * as data from "../services/admin-data.service.js";
 import * as bakra from "../services/bakra-admin.service.js";
+import * as cricketAdmin from "../services/cricket-admin.service.js";
 import {
   liveOps,
   minuteSeries,
@@ -238,6 +239,37 @@ export function adminRoutes() {
     "/bakra/questions",
     wrap(async (_q, res) => ok(res, await bakra.questionAnalytics())),
   );
+  // --- Hand Cricket --------------------------------------------------------
+  //
+  // Its own namespace and tab, like Tap Bakra. Read-only.
+
+  router.get("/cricket/overview", wrap(async (_q, res) => ok(res, await cricketAdmin.overview())));
+  router.get(
+    "/cricket/daily",
+    wrap(async (req, res) =>
+      ok(res, await cricketAdmin.daily(Math.min(Math.max(Number(req.query.days) || 30, 1), 180)))),
+  );
+  router.get("/cricket/live", wrap(async (_q, res) => ok(res, await cricketAdmin.live())));
+  router.get(
+    "/cricket/matches",
+    wrap(async (req, res) =>
+      ok(res, await cricketAdmin.recentMatches(Math.min(Math.max(Number(req.query.limit) || 50, 1), 200)))),
+  );
+  router.get(
+    "/cricket/matches/:id",
+    idParam,
+    wrap(async (req, res) => {
+      const detail = await cricketAdmin.matchDetail(req.id);
+      if (!detail) return res.status(404).json({ error: "match not found" });
+      ok(res, detail);
+    }),
+  );
+  router.get(
+    "/cricket/leaderboard",
+    wrap(async (req, res) =>
+      ok(res, await cricketAdmin.leaderboard(Math.min(Math.max(Number(req.query.limit) || 25, 1), 100)))),
+  );
+
   router.get(
     "/bakra/leaderboard",
     wrap(async (req, res) =>
@@ -712,6 +744,29 @@ export function adminRoutes() {
   router.get(
     "/settings/play-channel",
     wrap(async (_q, res) => ok(res, settings.playChannel())),
+  );
+
+  /**
+   * Which side games players are offered - Tap Bakra and Hand Cricket. Taking
+   * one off the menu hides its buttons everywhere (play page and marketing
+   * site) on the next load; links already sent keep working.
+   */
+  router.get(
+    "/settings/games",
+    wrap(async (_q, res) => ok(res, settings.gameVisibility())),
+  );
+  router.put(
+    "/settings/games",
+    wrap(async (req, res) => {
+      try {
+        ok(res, await settings.setGamesEnabled(
+          { bakra: req.body?.bakra, cricket: req.body?.cricket },
+          req.admin?.label ?? "admin",
+        ));
+      } catch (err) {
+        res.status(400).json({ error: err.message });
+      }
+    }),
   );
 
   router.put(

@@ -58,6 +58,10 @@ const SERVER_STEPS = new Map([
   ["hosted", { event: "web.hosted", trigger: "web.hosted", words: "created a room" }],
   ["joined", { event: "web.joined", trigger: "web.joined", words: "joined a room" }],
   ["guest_joined", { event: "web.guest_joined", trigger: "web.guest_joined", words: "started playing as a guest" }],
+  // Hand Cricket (2026-10-25).
+  ["cricket_bot", { event: "web.cricket_bot", trigger: "web.cricket_bot", words: "started Hand Cricket against the bot" }],
+  ["cricket_friend", { event: "web.cricket_friend", trigger: "web.cricket_friend", words: "challenged a friend to Hand Cricket" }],
+  ["cricket_joined", { event: "web.cricket_joined", trigger: "web.cricket_joined", words: "joined a friend's Hand Cricket match" }],
 ]);
 
 const STEPS = new Map([...CLIENT_STEPS, ...SERVER_STEPS]);
